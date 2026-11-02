@@ -1,0 +1,21 @@
+name: Contract & Lifecycle Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lf-gate:
+    name: Enforce Unix LF Line Endings
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run LF line-ending check
+        run: python3 .github/scripts/check_lf_eol.py

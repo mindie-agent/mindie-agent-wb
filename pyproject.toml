@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mindie-agent-wb"
-version = "0.1.0"
+version = "0.1.1"
 description = "Tencent WorkBuddy (CodeBuddy Agent CLI) native harness plugin & connector adapter for MindIE Agent"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,19 +28,19 @@ test = [
 ]
 
 [tool.uv.sources]
-mindie-knowledge = { git = "https://github.com/mindie-agent/knowledge", rev = "9a4325858e6fadb10715275826a7795843cbbdf4" }
-remote-dev = { git = "https://github.com/mindie-agent/remote-dev", rev = "85be999811771e03ecc7d78e5e560fac1636e7ef" }
+mindie-knowledge = { git = "https://github.com/mindie-agent/knowledge", rev = "883115068d1442f5d2b7eea226dcf31b359d6916" }
+remote-dev = { git = "https://github.com/mindie-agent/remote-dev", rev = "ba62b643af4bc8265c8206a32a1fe21733d9d119" }
 mindie-diagnostics = { git = "https://github.com/mindie-agent/diagnostics", rev = "5ae643e19223f2181ecdbaa3edaf464137c4805e" }
 
 [tool.uv]
 override-dependencies = [
-    "mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@9a4325858e6fadb10715275826a7795843cbbdf4",
-    "remote-dev @ git+https://github.com/mindie-agent/remote-dev@85be999811771e03ecc7d78e5e560fac1636e7ef",
+    "mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@883115068d1442f5d2b7eea226dcf31b359d6916",
+    "remote-dev @ git+https://github.com/mindie-agent/remote-dev@ba62b643af4bc8265c8206a32a1fe21733d9d119",
     "mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@5ae643e19223f2181ecdbaa3edaf464137c4805e",
-    "mindie-coordinator @ git+https://github.com/mindie-agent/coordinator@d146c55c414bfb92136cf5fb7fa11ae14c673ef0",
+    "mindie-coordinator @ git+https://github.com/mindie-agent/coordinator@29b651c5f05bd22de6abf51244ba8c4a3c1eb1c0",
     "mindie-profiler @ git+https://github.com/mindie-agent/profiler@7cdd56b6cc9e0e7f603368393497487dd2dbfe39",
     "mindie-sim @ git+https://github.com/mindie-agent/sim@f5608b4943f515c401d2f9b12fffb579a1e2571b",
-    "mindie-debugger @ git+https://github.com/mindie-agent/debugger@3ee032d0b29591a5b78f3e7a720fc45da38d37ca",
+    "mindie-debugger @ git+https://github.com/mindie-agent/debugger@863c2a5fac3108ee9c2c5fabba054f08d14144ea",
     "npu-top @ git+https://github.com/mindie-agent/npu-top@ff78215dbe94bb3bd16abc6897878918748b8aee",
 ]
 

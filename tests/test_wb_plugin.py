@@ -188,7 +188,7 @@ def test_install_workbuddy_plugin_registers_marketplace_cache_and_connector(tmp_
     assert (connector_path / "plugin.json").is_file()
     assert (connector_path / "ai.workbuddy" / "assets" / "icon.svg").is_file()
     mp_entries = json.loads((official_mp / "marketplace.json").read_text(encoding="utf-8"))["plugins"]
-    assert any(p.get("name") == "mindie-agent" and p.get("version") == "0.1.0" for p in mp_entries)
+    assert any(p.get("name") == "mindie-agent" and p.get("version") == "0.1.1" for p in mp_entries)
 
 
 @pytest.mark.skipif(not WORKBUDDY_CLI.is_file(), reason="WorkBuddy CLI not installed on this machine")

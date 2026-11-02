@@ -690,7 +690,7 @@ def handle_rpc(request: dict, surface: str = "tools", *, config=None) -> dict | 
             result=dict(
                 protocolVersion="2025-11-25",
                 capabilities=dict(tools=dict(listChanged=False)),
-                serverInfo=dict(name=f"mindie-wb-{surface}", version="0.1.0"),
+                serverInfo=dict(name=f"mindie-wb-{surface}", version="0.1.1"),
             ),
         )
     if method == "ping":

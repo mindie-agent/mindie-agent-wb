@@ -9,7 +9,7 @@
     {
       "name": "mindie-agent",
       "description": "Ascend NPU & vLLM-Ascend engineering assistant: complete MCP suite for remote NPU dev, profiling, roofline simulation, CANN/ACLGraph debugging, NPU fleet monitoring, cluster lease coordination, and L1-L4 graded knowledge flywheel.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "source": "./plugins/mindie-agent"
     }
   ]
