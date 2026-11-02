@@ -1,6 +1,12 @@
-# MindIE Agent for Tencent WorkBuddy (`mindie-agent-wb`)
+<p align="center">
+  <img src="plugins/mindie-agent/assets/mindie-agent-logo.png" alt="MindIE Agent logo" width="128" height="128">
+</p>
 
-腾讯 WorkBuddy（及底层 CodeBuddy Agent CLI）的原生插件与连接器（Connector）适配器，完整暴露 MindIE Agent 全栈 **40 项 MCP 工具**、生命周期 Hooks 与分级知识飞轮 Skill。
+<h1 align="center">MindIE Agent for Tencent WorkBuddy (<code>mindie-agent-wb</code>)</h1>
+
+<p align="center">
+  <b>腾讯 WorkBuddy（及底层 CodeBuddy Agent CLI）的原生插件与连接器（Connector）适配器，完整暴露 MindIE Agent 全栈 40 项 MCP 工具、生命周期 Hooks 与分级知识飞轮 Skill</b>
+</p>
 
 ## 1. 架构概览：连接器（Connector）与插件（Plugin）双重兼容
 

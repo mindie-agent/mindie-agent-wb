@@ -22,7 +22,15 @@ def test_plugin_manifests_and_connector_mcp_layout():
     assert plugin_json["name"] == "mindie-agent"
     assert isinstance(plugin_json["repository"], str)
     assert isinstance(plugin_json["author"], dict)
-    assert (PLUGIN_ROOT / plugin_json["logo"]).is_file()
+    assert "logo" not in plugin_json
+    assert (PLUGIN_ROOT / "assets" / "logo.svg").is_file()
+    assert (PLUGIN_ROOT / "assets" / "icon.svg").is_file()
+    assert (PLUGIN_ROOT / "assets" / "mindie-agent-icon.png").is_file()
+    assert (PLUGIN_ROOT / "assets" / "mindie-agent-logo.png").is_file()
+    assert (PLUGIN_ROOT / "ai.workbuddy" / "assets" / "icon.svg").is_file()
+    for comp in ("remote-dev", "knowledge", "diagnostics", "profiler", "sim", "npu-top", "coordinator", "mindie-bench"):
+        assert (PLUGIN_ROOT / "assets" / "icons" / f"{comp}-icon.png").is_file()
+        assert (PLUGIN_ROOT / "assets" / "icons" / f"{comp}-icon.svg").is_file()
     wb_ext = plugin_json["extensions"]["ai.workbuddy"]
     assert wb_ext["display"]["name"] == "MindIE Agent"
 
@@ -128,26 +136,52 @@ def test_install_workbuddy_plugin_registers_marketplace_cache_and_connector(tmp_
         json.dumps({"name": "workbuddy-connector-plugins-official", "plugins": []}),
         encoding="utf-8",
     )
+    snap_dir = wb_dir / "storage" / "skeleton"
+    snap_dir.mkdir(parents=True)
+    test_uid = "4a4a56dc-94d7-4f41-af55-02b3dbbbfb59"
+    (snap_dir / "account-snapshot.json").write_text(
+        json.dumps({"primary": {"version": 1, "uid": test_uid, "type": "personal"}}),
+        encoding="utf-8",
+    )
 
     res = setup.install_workbuddy_plugin(wb_dir=wb_dir)
     assert res["status"] == "installed"
+    assert res["enabled"] is True
     assert res["plugin_id"] == "mindie-agent@mindie-agent-marketplace"
     cache_path = Path(res["cache_install_path"])
     assert (cache_path / "plugin.json").is_file()
     assert (cache_path / "mcp.json").is_file()
     assert (cache_path / ".mcp.json").is_file()
     assert (cache_path / "hooks" / "hooks.json").is_file()
+    assert (cache_path / "assets" / "logo.svg").is_file()
+    assert (cache_path / "assets" / "icon.svg").is_file()
+    assert (cache_path / "assets" / "mindie-agent-icon.png").is_file()
+    assert (cache_path / "assets" / "mindie-agent-logo.png").is_file()
+    assert (cache_path / "assets" / "icons" / "remote-dev-icon.png").is_file()
+    assert (cache_path / "assets" / "icons" / "knowledge-icon.png").is_file()
+    assert (cache_path / "ai.workbuddy" / "assets" / "icon.svg").is_file()
 
     known_mp = json.loads(Path(res["known_marketplaces"]).read_text(encoding="utf-8"))
     assert "mindie-agent-marketplace" in known_mp
 
     installed = json.loads(Path(res["installed_plugins"]).read_text(encoding="utf-8"))
     assert "mindie-agent@mindie-agent-marketplace" in installed["plugins"]
+    assert "mindie-agent@workbuddy-connector-plugins-official" in installed["plugins"]
+
+    settings = json.loads(Path(res["settings_file"]).read_text(encoding="utf-8"))
+    assert settings["enabledPlugins"]["mindie-agent@mindie-agent-marketplace"] is True
+    assert settings["enabledPlugins"]["mindie-agent@workbuddy-connector-plugins-official"] is False
+
+    acct_state = json.loads((wb_dir / "plugin-account-state" / f"{test_uid}.json").read_text(encoding="utf-8"))
+    assert acct_state["version"] == 1
+    assert acct_state["identityKey"] == f"{test_uid}|"
+    assert acct_state["plugins"]["mindie-agent@workbuddy-connector-plugins-official"]["enabled"] is True
 
     connector_path = Path(res["connector_path"])
     assert (connector_path / "plugin.json").is_file()
+    assert (connector_path / "ai.workbuddy" / "assets" / "icon.svg").is_file()
     mp_entries = json.loads((official_mp / "marketplace.json").read_text(encoding="utf-8"))["plugins"]
-    assert any(p.get("name") == "mindie-agent" for p in mp_entries)
+    assert any(p.get("name") == "mindie-agent" and p.get("version") == "0.1.0" for p in mp_entries)
 
 
 @pytest.mark.skipif(not WORKBUDDY_CLI.is_file(), reason="WorkBuddy CLI not installed on this machine")
