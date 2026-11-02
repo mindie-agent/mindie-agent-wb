@@ -87,6 +87,14 @@ def isolated_mindie_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     data_home.mkdir(parents=True, exist_ok=True)
     wb_home.mkdir(parents=True, exist_ok=True)
     cb_home.mkdir(parents=True, exist_ok=True)
+    gitleaks_dir = home_dir / ".cache" / "mindie-agent" / "gitleaks"
+    gitleaks_dir.mkdir(parents=True, exist_ok=True)
+    gitleaks_stub = gitleaks_dir / ("gitleaks.exe" if sys.platform == "win32" else "gitleaks")
+    gitleaks_stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    try:
+        gitleaks_stub.chmod(0o755)
+    except OSError:
+        pass
 
     if _HOST_RUNTIME_PYTHON:
         monkeypatch.setenv("MINDIE_WB_PYTHON", _HOST_RUNTIME_PYTHON)
