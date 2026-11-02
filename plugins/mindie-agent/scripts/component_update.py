@@ -40,6 +40,10 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
+from wb_native_compat import ensure_wb_native_support
+
+ensure_wb_native_support()
+
 from paths import (
     apply_enterprise_transport_env,
     atomic_write_json,

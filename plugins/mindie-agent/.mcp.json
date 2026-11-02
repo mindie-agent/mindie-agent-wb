@@ -13,7 +13,7 @@
       "env": {
         "WB_PLUGIN_ROOT": "${CODEBUDDY_PLUGIN_ROOT}",
         "WB_PLUGIN_DATA": "${CODEBUDDY_PLUGIN_DATA}",
-        "REMOTE_DEV_HARNESS_PROFILE": "canonical",
+        "REMOTE_DEV_HARNESS_PROFILE": "wb",
         "UV_SYSTEM_CERTS": "true",
         "UV_NATIVE_TLS": "true",
         "GIT_TERMINAL_PROMPT": "0",

@@ -60,7 +60,9 @@ def test_live_mindie_launch_hooks_and_all_three_mcp_stdio_servers(tmp_path: Path
     assert remote_proc.returncode == 0, remote_proc.stderr
     remote_lines = [json.loads(line) for line in remote_proc.stdout.strip().splitlines()]
     assert remote_lines[0]["result"]["serverInfo"]["name"] == "mindie-wb-remote"
-    assert len(remote_lines[1]["result"]["tools"]) == 20
+    remote_tool_names = {t["name"] for t in remote_lines[1]["result"]["tools"]}
+    assert len(remote_tool_names) == 33
+    assert {"remote_MultiEdit", "remote_ViewImage", "remote_BashOutput", "remote_KillShell"}.issubset(remote_tool_names)
 
     # 3. Live stdio `mcp tools` (`tools/list` + `mindie_status` + `debugger` + `sim` + `profiler` + `coordinator`)
     tools_reqs = "\n".join(

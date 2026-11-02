@@ -3,7 +3,7 @@
   "harness": "workbuddy",
   "supported": [
     {
-      "minimum": "2.0.0",
+      "minimum": "1.0.0",
       "maximum": "9.99.99",
       "maximum_inclusive": true,
       "include_prerelease": true
@@ -23,7 +23,7 @@
     "plugin.manifest": {
       "supported": [
         {
-          "minimum": "2.0.0",
+          "minimum": "1.0.0",
           "maximum": "9.99.99",
           "maximum_inclusive": true,
           "include_prerelease": true
@@ -43,7 +43,7 @@
     "hooks.session-start": {
       "supported": [
         {
-          "minimum": "2.0.0",
+          "minimum": "1.0.0",
           "maximum": "9.99.99",
           "maximum_inclusive": true,
           "include_prerelease": true
@@ -62,7 +62,7 @@
     "hooks.user-prompt-submit": {
       "supported": [
         {
-          "minimum": "2.0.0",
+          "minimum": "1.0.0",
           "maximum": "9.99.99",
           "maximum_inclusive": true,
           "include_prerelease": true
@@ -81,7 +81,7 @@
     "hooks.pre-tool-use": {
       "supported": [
         {
-          "minimum": "2.0.0",
+          "minimum": "1.0.0",
           "maximum": "9.99.99",
           "maximum_inclusive": true,
           "include_prerelease": true
@@ -100,7 +100,7 @@
     "hooks.stop": {
       "supported": [
         {
-          "minimum": "2.0.0",
+          "minimum": "1.0.0",
           "maximum": "9.99.99",
           "maximum_inclusive": true,
           "include_prerelease": true
@@ -119,7 +119,7 @@
     "mcp.stdio": {
       "supported": [
         {
-          "minimum": "2.0.0",
+          "minimum": "1.0.0",
           "maximum": "9.99.99",
           "maximum_inclusive": true,
           "include_prerelease": true
@@ -139,7 +139,7 @@
     "transcript.session-store-jsonl": {
       "supported": [
         {
-          "minimum": "2.0.0",
+          "minimum": "1.0.0",
           "maximum": "9.99.99",
           "maximum_inclusive": true,
           "include_prerelease": true
@@ -158,7 +158,7 @@
     "summary.structured-output": {
       "supported": [
         {
-          "minimum": "2.0.0",
+          "minimum": "1.0.0",
           "maximum": "9.99.99",
           "maximum_inclusive": true,
           "include_prerelease": true

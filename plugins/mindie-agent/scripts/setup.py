@@ -41,6 +41,9 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from bounded import run as bounded_run
+from wb_native_compat import ensure_wb_native_support
+
+ensure_wb_native_support()
 from paths import (
     admission_path,
     apply_enterprise_transport_env,

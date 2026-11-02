@@ -23,7 +23,7 @@ def test_complete_mcp_tool_surfaces_exposed():
     tool_names = {t["name"] for t in tools_resp["result"]["tools"]}
     know_names = {t["name"] for t in know_resp["result"]["tools"]}
 
-    # 1. All 20 canonical remote-dev MCP tools
+    # 1. All 20 canonical + 13 native WorkBuddy remote-dev MCP tools (33 total)
     expected_remote = {
         "remote_auth",
         "remote_read",
@@ -45,6 +45,19 @@ def test_complete_mcp_tool_surfaces_exposed():
         "remote_artifact_push",
         "remote_context_snapshot",
         "remote_probe",
+        "remote_Read",
+        "remote_Write",
+        "remote_Edit",
+        "remote_MultiEdit",
+        "remote_Bash",
+        "remote_Glob",
+        "remote_Grep",
+        "remote_TaskOutput",
+        "remote_BashOutput",
+        "remote_NotebookEdit",
+        "remote_TaskStop",
+        "remote_KillShell",
+        "remote_ViewImage",
     }
     assert remote_names == expected_remote
 
@@ -77,7 +90,7 @@ def test_complete_mcp_tool_surfaces_exposed():
         "knowledge_sync",
     }
     assert know_names == expected_knowledge
-    assert len(remote_names) + len(tool_names) + len(know_names) == 40
+    assert len(remote_names) + len(tool_names) + len(know_names) == 53
 
     know_by_name = {t["name"]: t["inputSchema"] for t in know_resp["result"]["tools"]}
     assert know_by_name["knowledge_query"]["properties"]["limit"]["type"] == "integer"

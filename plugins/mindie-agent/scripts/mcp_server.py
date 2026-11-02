@@ -2,8 +2,9 @@
 
 [Role]
 Serves the three MindIE stdio MCP surfaces registered in WorkBuddy (`.mcp.json`
-and `mcp.json`), exposing all 40 MindIE MCP tools:
-- `remote` (`mindie-remote-dev`): 20 remote NPU development tools (`remote_*`).
+and `mcp.json`), exposing all 53 MindIE MCP tools:
+- `remote` (`mindie-remote-dev`): 33 remote NPU development tools (20 canonical
+  `remote_*` + 13 native WorkBuddy tools `remote_Read`..`remote_ViewImage`).
 - `tools` (`mindie-tools`): 14 deterministic component & observation tools
   (`mindie_status`, `profiler`, `sim`, `coordinator`, `debugger`, `npu_top`,
   `npu_status`, `server_status`, `list_mounts`, `find_npu_capacity`,
@@ -70,6 +71,8 @@ REMOTE_NATIVE_MAX_WAIT_MS = {
     "remote_write_stdin": 300000,
     "remote_job_stdin": 300000,
     "remote_bash": 600000,
+    "remote_Bash": 600000,
+    "remote_TaskOutput": 600000,
     "remote_run_command": 600000,
     "remote_exec_command": 30000,
 }
@@ -255,11 +258,21 @@ def _attach_accounting_warning(result: dict, warning_key: str, exc: Exception) -
     return result
 
 
+def _resolve_remote_profile() -> str:
+    from wb_native_compat import ensure_wb_native_support
+
+    ensure_wb_native_support()
+    from remote_dev.mcp.harness_profiles import NATIVE_PROFILES
+
+    return "wb" if "wb" in NATIVE_PROFILES else "canonical"
+
+
 def remote_tools() -> list[dict]:
-    os.environ["REMOTE_DEV_HARNESS_PROFILE"] = "canonical"
+    profile = _resolve_remote_profile()
+    os.environ["REMOTE_DEV_HARNESS_PROFILE"] = profile
     from remote_dev.mcp.tools import list_tools
 
-    return list(list_tools("canonical"))
+    return list(list_tools(profile))
 
 
 def component_tools() -> list[dict]:
@@ -397,7 +410,8 @@ def call_remote_surface(
     receipts: RemoteReceipts | None = None,
 ) -> dict:
     os.environ.setdefault("MINDIE_DIAGNOSTICS_CONFIG", str(diagnostics_config_path(config)))
-    os.environ["REMOTE_DEV_HARNESS_PROFILE"] = "canonical"
+    profile = _resolve_remote_profile()
+    os.environ["REMOTE_DEV_HARNESS_PROFILE"] = profile
     raw_args = dict(arguments or {})
     claim = _resolve_claim("remote", name, raw_args, meta=meta, config=config)
     exec_args = dict(raw_args)
@@ -417,7 +431,7 @@ def call_remote_surface(
         from remote_dev.mcp.server import tool_text
         from remote_dev.mcp.tools import call_tool
 
-        raw = call_tool(name, exec_args, profile="canonical")
+        raw = call_tool(name, exec_args, profile=profile)
         is_error = bool(isinstance(raw, dict) and raw.get("ok") is False)
         succeeded = not is_error
         blocks = [dict(type="text", text=tool_text(raw))]
@@ -513,6 +527,7 @@ def call_tools_surface(
             child_env = dict(os.environ)
             child_env["MINDIE_AGENT_CONFIG"] = str(cfg_file)
             if session and session != "wb-default-session":
+                child_env["WORKBUDDY_SESSION_ID"] = session
                 child_env["WB_CONVERSATION_ID"] = session
                 child_env["CODEBUDDY_SESSION_ID"] = session
                 child_env["AGY_CONVERSATION_ID"] = session

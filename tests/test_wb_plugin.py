@@ -91,8 +91,9 @@ def test_product_and_harness_compatibility_contracts_and_module_invariants(monke
     assert set(compat["used_interfaces"]) == set(compat["interface_registry"])
     import mindie_knowledge.releases as releases_mod
 
-    monkeypatch.setitem(releases_mod.REPOSITORIES, "workbuddy", "mindie-agent/mindie-agent-wb")
+    assert releases_mod.REPOSITORIES["workbuddy"] == "mindie-agent/mindie-agent-wb"
     releases_mod.validate_compatibility(compat, harness_name="workbuddy")
+    assert releases_mod.supports_harness(compat, harness_name="workbuddy", harness_version="1.2.15")
     assert releases_mod.supports_harness(compat, harness_name="workbuddy", harness_version="2.104.3")
     assert releases_mod.supports_harness(compat, harness_name="workbuddy", harness_version="5.3.0")
 

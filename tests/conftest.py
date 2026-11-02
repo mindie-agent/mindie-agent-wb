@@ -10,11 +10,15 @@ SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "plugins" / "mindie-agent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+from wb_native_compat import ensure_wb_native_support
+
+ensure_wb_native_support()
+
 CODE_ROOT = Path(__file__).resolve().parents[2]
-for sibling in ("remote-dev", "diagnostics", "coordinator", "profiler", "sim", "debugger", "npu-top"):
+for sibling in ("knowledge", "remote-dev", "diagnostics", "coordinator", "profiler", "sim", "debugger", "npu-top"):
     cand = CODE_ROOT / sibling
     if cand.is_dir() and str(cand) not in sys.path:
-        sys.path.append(str(cand))
+        sys.path.insert(0, str(cand))
 py_ver = f"python{sys.version_info.major}.{sys.version_info.minor}"
 for sibling_venv in (
     CODE_ROOT / "knowledge" / ".venv" / "lib",
