@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mindie-agent-wb"
+version = "0.1.0"
+description = "Tencent WorkBuddy (CodeBuddy Agent CLI) native harness plugin & connector adapter for MindIE Agent"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mindie-knowledge>=0.13.0",
+    "remote-dev>=0.10.0",
+    "mindie-diagnostics>=0.5.0",
+]
+
+[project.optional-dependencies]
+components = [
+    "mindie-coordinator>=0.6.0",
+    "mindie-profiler>=0.5.0",
+    "mindie-sim>=0.7.0",
+    "mindie-debugger>=0.1.0",
+    "npu-top>=0.3.0",
+]
+test = [
+    "pytest>=8,<10",
+    "jsonschema>=4",
+]
+
+[tool.uv.sources]
+mindie-knowledge = { git = "https://github.com/mindie-agent/knowledge", rev = "9a4325858e6fadb10715275826a7795843cbbdf4" }
+remote-dev = { git = "https://github.com/mindie-agent/remote-dev", rev = "85be999811771e03ecc7d78e5e560fac1636e7ef" }
+mindie-diagnostics = { git = "https://github.com/mindie-agent/diagnostics", rev = "5ae643e19223f2181ecdbaa3edaf464137c4805e" }
+
+[tool.uv]
+override-dependencies = [
+    "mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@9a4325858e6fadb10715275826a7795843cbbdf4",
+    "remote-dev @ git+https://github.com/mindie-agent/remote-dev@85be999811771e03ecc7d78e5e560fac1636e7ef",
+    "mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@5ae643e19223f2181ecdbaa3edaf464137c4805e",
+    "mindie-coordinator @ git+https://github.com/mindie-agent/coordinator@d146c55c414bfb92136cf5fb7fa11ae14c673ef0",
+    "mindie-profiler @ git+https://github.com/mindie-agent/profiler@7cdd56b6cc9e0e7f603368393497487dd2dbfe39",
+    "mindie-sim @ git+https://github.com/mindie-agent/sim@f5608b4943f515c401d2f9b12fffb579a1e2571b",
+    "mindie-debugger @ git+https://github.com/mindie-agent/debugger@3ee032d0b29591a5b78f3e7a720fc45da38d37ca",
+    "npu-top @ git+https://github.com/mindie-agent/npu-top@ff78215dbe94bb3bd16abc6897878918748b8aee",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "live_npu: standing A2/A3 Ascend NPU non-destructive live integration",
+]

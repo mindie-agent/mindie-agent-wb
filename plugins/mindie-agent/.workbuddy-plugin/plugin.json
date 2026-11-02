@@ -1,0 +1,47 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "mindie-agent",
+  "version": "0.1.0",
+  "description": "Ascend NPU & vLLM-Ascend engineering assistant: complete MCP suite for remote NPU development, profiling, roofline simulation, CANN/ACLGraph debugging, NPU fleet monitoring, cluster lease coordination, and L1-L4 graded knowledge flywheel.",
+  "author": {
+    "name": "MindIE Agent Team",
+    "url": "https://github.com/mindie-agent/mindie-agent"
+  },
+  "homepage": "https://github.com/mindie-agent/mindie-agent",
+  "repository": "https://github.com/mindie-agent/mindie-agent-wb",
+  "license": "MIT",
+  "keywords": [
+    "mindie",
+    "ascend",
+    "npu",
+    "vllm-ascend",
+    "remote-dev",
+    "profiler",
+    "sim",
+    "debugger",
+    "coordinator",
+    "npu-top",
+    "knowledge",
+    "mcp",
+    "skills"
+  ],
+  "extensions": {
+    "ai.workbuddy": {
+      "schemaVersion": "1.0.0",
+      "display": {
+        "name": "MindIE Agent",
+        "name_zh": "MindIE 昇腾工程助手",
+        "name_en": "MindIE Ascend Agent"
+      },
+      "policy": {
+        "minWorkbuddyVersion": "5.0.0",
+        "visible_in": [
+          "internal",
+          "iOA",
+          "cloudhosted",
+          "selfhosted"
+        ]
+      }
+    }
+  }
+}

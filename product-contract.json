@@ -1,0 +1,23 @@
+{
+  "schema": "mindie-product-contract/1",
+  "validation": "mindie-candidate-check/1",
+  "harness": "workbuddy",
+  "native_version": "0.1.0",
+  "python_Range": ">=3.11,<3.15",
+  "publication": {
+    "repository": "mindie-agent/knowledge-vllm-ascend",
+    "ref": "main",
+    "domain": "vllm-ascend",
+    "verified_commit": "d3d5bf6320e171d4a0f131a6f746858700e0c4cc"
+  },
+  "components": {
+    "mindie-knowledge": "0.13.8",
+    "remote-dev": "0.11.2",
+    "mindie-diagnostics": "0.5.4",
+    "mindie-coordinator": "0.7.1",
+    "mindie-profiler": "0.5.5",
+    "mindie-sim": "0.9.0",
+    "mindie-debugger": "0.1.0",
+    "npu-top": "0.3.0"
+  }
+}

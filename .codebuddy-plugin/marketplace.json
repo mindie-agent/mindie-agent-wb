@@ -1,0 +1,16 @@
+{
+  "name": "mindie-agent-marketplace",
+  "description": "MindIE Agent official plugin and connector marketplace for Tencent WorkBuddy",
+  "owner": {
+    "name": "MindIE Agent Team",
+    "url": "https://github.com/mindie-agent/mindie-agent"
+  },
+  "plugins": [
+    {
+      "name": "mindie-agent",
+      "description": "Ascend NPU & vLLM-Ascend engineering assistant: complete MCP suite for remote NPU dev, profiling, roofline simulation, CANN/ACLGraph debugging, NPU fleet monitoring, cluster lease coordination, and L1-L4 graded knowledge flywheel.",
+      "version": "0.1.0",
+      "source": "./plugins/mindie-agent"
+    }
+  ]
+}

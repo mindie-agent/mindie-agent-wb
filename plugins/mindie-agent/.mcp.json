@@ -1,0 +1,74 @@
+{
+  "mcpServers": {
+    "mindie-remote-dev": {
+      "type": "stdio",
+      "command": "python3",
+      "args": [
+        "-I",
+        "${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py",
+        "mcp",
+        "remote"
+      ],
+      "cwd": "${CODEBUDDY_PLUGIN_ROOT}",
+      "env": {
+        "WB_PLUGIN_ROOT": "${CODEBUDDY_PLUGIN_ROOT}",
+        "WB_PLUGIN_DATA": "${CODEBUDDY_PLUGIN_DATA}",
+        "REMOTE_DEV_HARNESS_PROFILE": "canonical",
+        "UV_SYSTEM_CERTS": "true",
+        "UV_NATIVE_TLS": "true",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GCM_INTERACTIVE": "never",
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8"
+      },
+      "alwaysLoad": true,
+      "defer_loading": false
+    },
+    "mindie-tools": {
+      "type": "stdio",
+      "command": "python3",
+      "args": [
+        "-I",
+        "${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py",
+        "mcp",
+        "tools"
+      ],
+      "cwd": "${CODEBUDDY_PLUGIN_ROOT}",
+      "env": {
+        "WB_PLUGIN_ROOT": "${CODEBUDDY_PLUGIN_ROOT}",
+        "WB_PLUGIN_DATA": "${CODEBUDDY_PLUGIN_DATA}",
+        "UV_SYSTEM_CERTS": "true",
+        "UV_NATIVE_TLS": "true",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GCM_INTERACTIVE": "never",
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8"
+      },
+      "alwaysLoad": true,
+      "defer_loading": false
+    },
+    "mindie-knowledge": {
+      "type": "stdio",
+      "command": "python3",
+      "args": [
+        "-I",
+        "${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py",
+        "mcp",
+        "knowledge"
+      ],
+      "cwd": "${CODEBUDDY_PLUGIN_ROOT}",
+      "env": {
+        "WB_PLUGIN_ROOT": "${CODEBUDDY_PLUGIN_ROOT}",
+        "WB_PLUGIN_DATA": "${CODEBUDDY_PLUGIN_DATA}",
+        "UV_SYSTEM_CERTS": "true",
+        "UV_NATIVE_TLS": "true",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GCM_INTERACTIVE": "never",
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8"
+      },
+      "alwaysLoad": true,
+      "defer_loading": false
+    }
+  }
+}

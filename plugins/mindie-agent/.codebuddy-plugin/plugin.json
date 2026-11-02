@@ -1,0 +1,72 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "mindie-agent",
+  "version": "0.1.0",
+  "description": "Ascend NPU & vLLM-Ascend engineering assistant: complete MCP suite for remote NPU development, profiling, roofline simulation, CANN/ACLGraph debugging, NPU fleet monitoring, cluster lease coordination, and L1-L4 graded knowledge flywheel.",
+  "author": {
+    "name": "MindIE Agent Team",
+    "url": "https://github.com/mindie-agent/mindie-agent"
+  },
+  "homepage": "https://github.com/mindie-agent/mindie-agent",
+  "repository": "https://github.com/mindie-agent/mindie-agent-wb",
+  "license": "MIT",
+  "keywords": [
+    "mindie",
+    "ascend",
+    "npu",
+    "vllm-ascend",
+    "remote-dev",
+    "profiler",
+    "sim",
+    "debugger",
+    "coordinator",
+    "npu-top",
+    "knowledge",
+    "mcp",
+    "skills"
+  ],
+  "extensions": {
+    "ai.workbuddy": {
+      "schemaVersion": "1.0.0",
+      "display": {
+        "name": "MindIE Agent",
+        "name_zh": "MindIE 昇腾工程助手",
+        "name_en": "MindIE Ascend Agent",
+        "description_zh": "昇腾 NPU 与 vLLM-Ascend 全栈研发连接器与插件：完整暴露远端 NPU 容器开发 (remote-dev 20 项工具)、性能采集剖析 (profiler)、Roofline 与拓扑仿真 (sim)、CANN 故障与 ACLGraph/精度调试 (debugger)、集群算力实时监控 (npu-top)、NPU/端口租约队列协调 (coordinator) 及 L1-L4 分级知识飞轮 (knowledge)。",
+        "description_en": "Full-stack Ascend NPU & vLLM-Ascend engineering plugin and connector: exposes 40 MCP tools across remote NPU development (remote-dev), profiling (profiler), Roofline/topology simulation (sim), CANN/ACLGraph/precision debugging (debugger), NPU fleet telemetry (npu-top), NPU/port lease coordination (coordinator), and L1-L4 graded knowledge retrieval/distillation (knowledge).",
+        "examples_zh": [
+          "/mindie-agent 排查 vLLM-Ascend 新模型 0-day Bring-up 精度偏差与 ACLGraph 捕获同步违规",
+          "查看昇腾集群各节点空闲 NPU 卡与显存状态，并申请双 Die 同 Package 测试租约",
+          "分析远端容器中的昇腾 A3 910C Profiling 算子耗时瓶颈并运行 Roofline 仿真评估",
+          "对远端 NPU 容器中的报错日志执行 CANN 错误码解码与多卡故障根因归因 (debugger)"
+        ],
+        "examples_en": [
+          "/mindie-agent Investigate 0-day vLLM-Ascend model bring-up precision drift and ACLGraph capture violations",
+          "Check observed idle NPUs across the Ascend cluster and acquire a same-package NPU lease via coordinator",
+          "Analyze Ascend A3 910C profiling traces and run Roofline simulation for operator bottlenecks",
+          "Triage multi-rank CANN plog faults and decode RTS/HCCL error codes with mindie-debugger"
+        ]
+      },
+      "policy": {
+        "minWorkbuddyVersion": "5.0.0",
+        "visible_in": [
+          "internal",
+          "iOA",
+          "cloudhosted",
+          "selfhosted"
+        ],
+        "mcpServers": {
+          "mindie-remote-dev": {
+            "timeout": 660000
+          },
+          "mindie-tools": {
+            "timeout": 660000
+          },
+          "mindie-knowledge": {
+            "timeout": 210000
+          }
+        }
+      }
+    }
+  }
+}

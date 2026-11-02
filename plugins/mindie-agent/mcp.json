@@ -1,0 +1,69 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "mindie-remote-dev": {
+      "type": "stdio",
+      "command": "python3",
+      "args": [
+        "-I",
+        "${PLUGIN_ROOT}/scripts/mindie_launch.py",
+        "mcp",
+        "remote"
+      ],
+      "cwd": "${PLUGIN_ROOT}",
+      "env": {
+        "WB_PLUGIN_ROOT": "${PLUGIN_ROOT}",
+        "WB_PLUGIN_DATA": "${PLUGIN_DATA}",
+        "REMOTE_DEV_HARNESS_PROFILE": "canonical",
+        "UV_SYSTEM_CERTS": "true",
+        "UV_NATIVE_TLS": "true",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GCM_INTERACTIVE": "never",
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    "mindie-tools": {
+      "type": "stdio",
+      "command": "python3",
+      "args": [
+        "-I",
+        "${PLUGIN_ROOT}/scripts/mindie_launch.py",
+        "mcp",
+        "tools"
+      ],
+      "cwd": "${PLUGIN_ROOT}",
+      "env": {
+        "WB_PLUGIN_ROOT": "${PLUGIN_ROOT}",
+        "WB_PLUGIN_DATA": "${PLUGIN_DATA}",
+        "UV_SYSTEM_CERTS": "true",
+        "UV_NATIVE_TLS": "true",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GCM_INTERACTIVE": "never",
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    "mindie-knowledge": {
+      "type": "stdio",
+      "command": "python3",
+      "args": [
+        "-I",
+        "${PLUGIN_ROOT}/scripts/mindie_launch.py",
+        "mcp",
+        "knowledge"
+      ],
+      "cwd": "${PLUGIN_ROOT}",
+      "env": {
+        "WB_PLUGIN_ROOT": "${PLUGIN_ROOT}",
+        "WB_PLUGIN_DATA": "${PLUGIN_DATA}",
+        "UV_SYSTEM_CERTS": "true",
+        "UV_NATIVE_TLS": "true",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GCM_INTERACTIVE": "never",
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  }
+}

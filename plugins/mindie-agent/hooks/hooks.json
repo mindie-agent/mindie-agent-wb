@@ -1,0 +1,62 @@
+{
+  "description": "MindIE Agent lifecycle hooks for Tencent WorkBuddy (SessionStart, UserPromptExpansion, UserPromptSubmit, PreToolUse, Stop)",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py\" hook session-start",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptExpansion": [
+      {
+        "matcher": "^mindie-agent(:mindie-agent)?$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py\" hook user-prompt-expansion",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py\" hook user-prompt-submit",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^mcp__(?:plugin[-_][A-Za-z0-9_-]+[-_])?mindie[-_](?:remote[-_]dev|tools|knowledge)__",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py\" hook pre-tool-use",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py\" hook stop",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
