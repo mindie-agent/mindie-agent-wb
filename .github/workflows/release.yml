@@ -1,0 +1,28 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: mindie-agent/mindie-bench/.github/workflows/publish-release.yml@484b80621aaf9293c559786d0ef2174c79a0dbb4
+    with:
+      benchmark-ref: 484b80621aaf9293c559786d0ef2174c79a0dbb4
+      release-notes-path: docs/releases/mindie-agent-wb-0.1.2.md
+      version-files: |
+        pyproject.toml
+        plugins/mindie-agent/plugin.json
+        plugins/mindie-agent/.codebuddy-plugin/plugin.json
+        plugins/mindie-agent/.workbuddy-plugin/plugin.json
+        plugins/mindie-agent/.claude-plugin/plugin.json
+      setup-command: |
+        uv sync --all-extras --no-install-project
+      test-command: |
+        .venv/bin/python .github/scripts/check_lf_eol.py
+        .venv/bin/python -m pytest -q -m "not live_npu"
+      build-command: |
+        git archive --format=tar.gz --prefix="mindie-agent-wb-$RELEASE_VERSION/" --output="$RELEASE_ASSETS_DIR/mindie-agent-wb-$RELEASE_VERSION.tar.gz" "$GITHUB_SHA"
