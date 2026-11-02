@@ -46,7 +46,32 @@ def _find_host_runtime_python() -> str | None:
     return None
 
 
+def _find_gh_token() -> str | None:
+    import os
+    import shutil
+    import subprocess
+
+    existing = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if existing:
+        return existing
+    if not shutil.which("gh"):
+        return None
+    try:
+        res = subprocess.run(
+            ["gh", "auth", "token", "--hostname", "github.com"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        tok = res.stdout.strip()
+        return tok if res.returncode == 0 and tok else None
+    except Exception:
+        return None
+
+
 _HOST_RUNTIME_PYTHON = _find_host_runtime_python()
+_HOST_GH_TOKEN = _find_gh_token()
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +90,8 @@ def isolated_mindie_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     if _HOST_RUNTIME_PYTHON:
         monkeypatch.setenv("MINDIE_WB_PYTHON", _HOST_RUNTIME_PYTHON)
+    if _HOST_GH_TOKEN:
+        monkeypatch.setenv("GH_TOKEN", _HOST_GH_TOKEN)
     monkeypatch.setenv("HOME", str(home_dir))
     monkeypatch.setenv("USERPROFILE", str(home_dir))
     monkeypatch.setenv("MINDIE_CONFIG_HOME", str(cfg_home))

@@ -53,6 +53,9 @@ def _preferred_python() -> str | None:
                 return str(_norm_python_path(py))
         except ValueError:
             pass
+    env_py = (os.environ.get("MINDIE_WB_PYTHON") or "").strip()
+    if env_py and Path(env_py).is_file():
+        return str(_norm_python_path(env_py))
     for venv_name in ("wb-venv", "agy-venv"):
         vdir = data_home() / venv_name
         for candidate in (vdir / "Scripts" / "python.exe", vdir / "bin" / "python"):
