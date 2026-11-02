@@ -95,7 +95,7 @@ PRIVATE_KNOWLEDGE_CATALOG = [
                 include_archived={"type": "boolean"},
                 navigation_only={"type": "boolean", "default": False},
                 run_id={"type": "string"},
-                mode={"type": "string", "enum": ["reuse", "standard", "explore"]},
+                mode={"type": "string", "enum": ["reuse", "diagnose", "explore"]},
                 native_subcontext={"type": "boolean"},
                 ledger_entries={"type": "array", "items": {"type": "object"}},
                 bottleneck_summary={"type": "object"},
@@ -131,7 +131,7 @@ PRIVATE_KNOWLEDGE_CATALOG = [
                 known_refs={"type": "array", "items": {"type": "string"}},
                 token_budget={"type": "integer", "minimum": 1, "maximum": 16000},
                 run_id={"type": "string"},
-                mode={"type": "string", "enum": ["reuse", "standard", "explore"]},
+                mode={"type": "string", "enum": ["reuse", "diagnose", "explore"]},
                 ledger_entries={"type": "array", "items": {"type": "object"}},
                 bottleneck_summary={"type": "object"},
                 native_subcontext={"type": "boolean"},
@@ -282,10 +282,10 @@ def execute_knowledge_tool(tool_name: str, args: dict, *, session: str) -> dict:
             "_session_id": session,
             "_activation": lease["token"],
         }
-        for opt_key in ("related_refs", "proposal"):
+        for opt_key in ("related_refs", "proposal", "topic", "target_signature"):
             if opt_key in body:
                 payload[opt_key] = body[opt_key]
-        if "related_refs" not in body and "proposal" not in body:
+        if not any(k in body for k in ("related_refs", "proposal", "topic", "target_signature")):
             return distill_selected(engine_path, payload)
         return rpc(conn, "distill", payload, timeout=summary_budget.distill_rpc_timeout())
 

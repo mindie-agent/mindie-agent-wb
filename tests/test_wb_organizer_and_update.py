@@ -226,3 +226,15 @@ def test_enterprise_transport_env_and_staged_source_baseline(tmp_path: Path, mon
     )
     assert cfg_out["harness"] == "workbuddy"
     assert (tmp_path / "config" / "mindie-community.json").is_file()
+
+    comm_out = setup.configure_community(
+        config=tmp_path / "config" / "wb.json",
+        enabled=True,
+        fork="org-bot/custom-corpus",
+        account="custom-owner",
+        repository="mindie-agent/knowledge-operators",
+        project_root=tmp_path,
+    )
+    assert comm_out["enabled"] is True
+    assert comm_out["account"] == "custom-owner"
+    assert comm_out["repository"] == "mindie-agent/knowledge-operators"

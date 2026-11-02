@@ -539,12 +539,16 @@ def configure_community(
         argv.append("--enable" if enabled else "--disable")
         if fork is not None:
             argv.extend(["--fork", fork])
+        if account is not None:
+            argv.extend(["--account", account])
         if project_root is not None:
             argv.extend(["--project-root", str(project_root)])
         if remote_project_root is not None:
             argv.extend(["--remote-project-root", remote_project_root])
         if visibility:
             argv.extend(["--visibility", visibility])
+        if repository:
+            argv.extend(["--repository", repository])
         proc = bounded_run(argv, "", timeout=30.0)
         if proc.returncode != 0:
             raise RuntimeError(f"failed to configure community sharing via {interpreter}: {proc.stderr or proc.stdout}")
@@ -623,9 +627,11 @@ def main(argv: list[str] | None = None) -> int:
     share_p.add_argument("--enable", action="store_true")
     share_p.add_argument("--disable", action="store_true")
     share_p.add_argument("--fork", default=None)
+    share_p.add_argument("--account", default=None)
     share_p.add_argument("--project-root", default=None)
     share_p.add_argument("--remote-project-root", default=None)
     share_p.add_argument("--visibility", default="public")
+    share_p.add_argument("--repository", default="mindie-agent/knowledge-vllm-ascend")
 
     args = parser.parse_args(raw_argv)
     if args.cmd == "init":
@@ -645,9 +651,11 @@ def main(argv: list[str] | None = None) -> int:
             config=args.config,
             enabled=enabled,
             fork=args.fork,
+            account=args.account,
             project_root=args.project_root,
             remote_project_root=args.remote_project_root,
             visibility=args.visibility,
+            repository=args.repository,
         )
     sys.stdout.buffer.write((json.dumps(result, ensure_ascii=False) + "\n").encode("utf-8"))
     sys.stdout.buffer.flush()

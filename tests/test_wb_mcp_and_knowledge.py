@@ -83,7 +83,9 @@ def test_complete_mcp_tool_surfaces_exposed():
     assert know_by_name["knowledge_query"]["properties"]["limit"]["type"] == "integer"
     assert know_by_name["knowledge_query"]["properties"]["conditions"]["type"] == "object"
     assert know_by_name["knowledge_query"]["properties"]["include_unknown"]["type"] == "boolean"
+    assert know_by_name["knowledge_query"]["properties"]["mode"]["enum"] == ["reuse", "diagnose", "explore"]
     assert know_by_name["knowledge_explain"]["properties"]["refs"]["type"] == "array"
+    assert know_by_name["knowledge_explain"]["properties"]["mode"]["enum"] == ["reuse", "diagnose", "explore"]
     assert know_by_name["knowledge_distill"]["properties"]["inputs"]["type"] == "array"
     assert know_by_name["knowledge_distill"]["properties"]["proposal"]["type"] == "object"
 
