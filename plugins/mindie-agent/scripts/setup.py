@@ -447,7 +447,10 @@ def _discover_workbuddy_accounts(wb_root: Path) -> list[tuple[str, str]]:
         try:
             primary = read_json(snap_file).get("primary")
             if isinstance(primary, dict) and str(primary.get("uid") or "").strip():
-                accounts[str(primary["uid"]).strip()] = str(primary.get("enterpriseId") or "").strip()
+                uid = str(primary["uid"]).strip()
+                ent = str(primary.get("enterpriseId") or "").strip()
+                if ent or uid not in accounts:
+                    accounts[uid] = ent
         except ValueError:
             pass
 
@@ -457,8 +460,9 @@ def _discover_workbuddy_accounts(wb_root: Path) -> list[tuple[str, str]]:
             try:
                 parts = str(read_json(cs_file).get("accountIdentityKey") or "").split("|")
                 uid = (parts[0] if parts and parts[0] else cs_file.parent.name).strip()
-                if uid and uid not in accounts:
-                    accounts[uid] = parts[1].strip() if len(parts) > 1 else ""
+                ent = parts[1].strip() if len(parts) > 1 else ""
+                if uid and (ent or uid not in accounts):
+                    accounts[uid] = ent or accounts.get(uid, "")
             except ValueError:
                 pass
 

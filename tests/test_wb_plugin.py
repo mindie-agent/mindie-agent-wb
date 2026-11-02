@@ -140,7 +140,13 @@ def test_install_workbuddy_plugin_registers_marketplace_cache_and_connector(tmp_
     snap_dir.mkdir(parents=True)
     test_uid = "4a4a56dc-94d7-4f41-af55-02b3dbbbfb59"
     (snap_dir / "account-snapshot.json").write_text(
-        json.dumps({"primary": {"version": 1, "uid": test_uid, "type": "personal"}}),
+        json.dumps({"primary": {"version": 1, "uid": test_uid, "type": "enterprise"}}),
+        encoding="utf-8",
+    )
+    conn_state_dir = wb_dir / "connectors" / test_uid
+    conn_state_dir.mkdir(parents=True)
+    (conn_state_dir / "connector-states.json").write_text(
+        json.dumps({"accountIdentityKey": f"{test_uid}|ent-01"}),
         encoding="utf-8",
     )
 
@@ -174,7 +180,7 @@ def test_install_workbuddy_plugin_registers_marketplace_cache_and_connector(tmp_
 
     acct_state = json.loads((wb_dir / "plugin-account-state" / f"{test_uid}.json").read_text(encoding="utf-8"))
     assert acct_state["version"] == 1
-    assert acct_state["identityKey"] == f"{test_uid}|"
+    assert acct_state["identityKey"] == f"{test_uid}|ent-01"
     assert acct_state["plugins"]["mindie-agent@workbuddy-connector-plugins-official"]["enabled"] is True
 
     connector_path = Path(res["connector_path"])
