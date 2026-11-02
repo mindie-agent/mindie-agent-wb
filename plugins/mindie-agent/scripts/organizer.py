@@ -41,6 +41,10 @@ from mindie_knowledge.loop import summary_scratch
 from mindie_knowledge.loop.summary_budget import native_timeout
 from mindie_knowledge.materials import summarizer
 
+HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+
 from bounded import run as bounded_run
 from paths import state_dir, workbuddy_cli_bin
 

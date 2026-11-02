@@ -335,6 +335,23 @@ def publish_bind(
         db.close()
 
 
+def _extract_verified_meta_session(meta: dict | None) -> str | None:
+    if isinstance(meta, dict):
+        for key in ("workbuddy.ai/conversationId", "conversationId"):
+            raw = meta.get(key)
+            if raw is not None:
+                if not isinstance(raw, str) or not SESSION_RE.fullmatch(raw.strip()):
+                    raise ValueError(f"invalid {key} in MCP metadata")
+                return raw.strip().lower()
+    for env_key in ("WB_CONVERSATION_ID", "CODEBUDDY_SESSION_ID", "AGY_CONVERSATION_ID"):
+        raw_env = os.environ.get(env_key)
+        if isinstance(raw_env, str) and raw_env.strip():
+            if not SESSION_RE.fullmatch(raw_env.strip()):
+                raise ValueError(f"invalid {env_key} environment variable")
+            return raw_env.strip().lower()
+    return None
+
+
 def claim_bind(
     surface: str,
     local_tool: str,
@@ -351,11 +368,7 @@ def claim_bind(
     path = bind_db_path(config)
     now = time.time()
     cutoff = now - BIND_TTL_SECONDS
-    meta_session = None
-    if isinstance(meta, dict):
-        raw_meta_conv = meta.get("workbuddy.ai/conversationId") or meta.get("conversationId")
-        if isinstance(raw_meta_conv, str) and SESSION_RE.fullmatch(raw_meta_conv.strip()):
-            meta_session = raw_meta_conv.strip().lower()
+    meta_session = _extract_verified_meta_session(meta)
 
     if path.is_file():
         db = _connect(path, create=False)
@@ -363,13 +376,33 @@ def claim_bind(
             with db:
                 db.execute("BEGIN IMMEDIATE")
                 _ensure_tables(db)
-                row = db.execute(
-                    "SELECT bind_id, session, workspace_root, transcript_path, step_idx, tool_use_id "
-                    "FROM binds "
-                    "WHERE surface=? AND local_tool=? AND args_digest=? AND status='bound' AND created>=? "
-                    "ORDER BY created DESC, step_idx DESC LIMIT 1",
-                    (surface, local_tool, adigest, cutoff),
-                ).fetchone()
+                if meta_session is not None:
+                    row = db.execute(
+                        "SELECT bind_id, session, workspace_root, transcript_path, step_idx, tool_use_id "
+                        "FROM binds "
+                        "WHERE surface=? AND local_tool=? AND args_digest=? AND status='bound' "
+                        "AND created>=? AND session=? "
+                        "ORDER BY created DESC, step_idx DESC LIMIT 1",
+                        (surface, local_tool, adigest, cutoff, meta_session),
+                    ).fetchone()
+                else:
+                    sessions = db.execute(
+                        "SELECT DISTINCT session FROM binds "
+                        "WHERE surface=? AND local_tool=? AND args_digest=? AND status='bound' AND created>=?",
+                        (surface, local_tool, adigest, cutoff),
+                    ).fetchall()
+                    if len(sessions) > 1:
+                        raise ValueError(
+                            f"ambiguous PreToolUse binds across {len(sessions)} conversations for "
+                            f"{surface}.{local_tool}; verified conversationId metadata is required"
+                        )
+                    row = db.execute(
+                        "SELECT bind_id, session, workspace_root, transcript_path, step_idx, tool_use_id "
+                        "FROM binds "
+                        "WHERE surface=? AND local_tool=? AND args_digest=? AND status='bound' AND created>=? "
+                        "ORDER BY created DESC, step_idx DESC LIMIT 1",
+                        (surface, local_tool, adigest, cutoff),
+                    ).fetchone()
                 if row is not None:
                     bind_id, session, workspace_root, transcript_path, step_idx, tool_use_id = row
                     db.execute(
@@ -398,14 +431,20 @@ def claim_bind(
             db.close()
 
     if meta_session is not None:
-        bind_id = publish_bind(
+        publish_bind(
             meta_session,
             surface,
             local_tool,
             arguments,
             config=config,
         )
-        return claim_bind(surface, local_tool, arguments, config=config)
+        return claim_bind(
+            surface,
+            local_tool,
+            arguments,
+            meta={"workbuddy.ai/conversationId": meta_session},
+            config=config,
+        )
 
     if not path.is_file():
         raise ValueError("no native PreToolUse bind database exists; call rejected")

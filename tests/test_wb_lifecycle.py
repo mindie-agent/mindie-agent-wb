@@ -123,6 +123,33 @@ def test_pre_tool_use_binds_mcp_call_and_rejects_replay(tmp_path: Path):
     with pytest.raises(ValueError, match="must not declare session identity"):
         identity.claim_bind("tools", "mindie_status", {"session_id": SESSION_A})
 
+    # Cross-conversation bind isolation: SESSION_A must never claim SESSION_B's identical bind
+    shared_args = {"argv": ["leases"]}
+    identity.publish_bind(SESSION_A, "tools", "coordinator", shared_args)
+    identity.publish_bind(SESSION_B, "tools", "coordinator", shared_args)
+
+    # Without _meta, two concurrent identical binds across different conversations are rejected as ambiguous
+    with pytest.raises(ValueError, match="ambiguous PreToolUse binds"):
+        identity.claim_bind("tools", "coordinator", shared_args)
+
+    # With _meta specifying SESSION_A, only SESSION_A's bind is claimed
+    claim_a = identity.claim_bind(
+        "tools",
+        "coordinator",
+        shared_args,
+        meta={"workbuddy.ai/conversationId": SESSION_A},
+    )
+    assert claim_a["session"] == SESSION_A
+
+    # And SESSION_B's bind remains available for SESSION_B
+    claim_b = identity.claim_bind(
+        "tools",
+        "coordinator",
+        shared_args,
+        meta={"workbuddy.ai/conversationId": SESSION_B},
+    )
+    assert claim_b["session"] == SESSION_B
+
 
 def test_stop_never_forces_continuation_and_requires_manual_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     workspace = tmp_path / "ws"

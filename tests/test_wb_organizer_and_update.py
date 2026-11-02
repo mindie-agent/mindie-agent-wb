@@ -40,10 +40,25 @@ def _sample_request() -> tuple[dict, str]:
 
 
 def test_organizer_identity_passes_core_summarizer_validation():
+    import subprocess
+    import sys
+
     ident = organizer.identity()
     validated = summarizer.validate_identity(ident)
     assert validated["fingerprint"] == ident["fingerprint"]
     assert "mindie-distill-request/1" in validated["capabilities"]
+
+    # Also verify isolated subprocess execution (`python -I organizer.py --identity`)
+    proc = subprocess.run(
+        [sys.executable, "-I", str(Path(organizer.__file__).resolve()), "--identity"],
+        capture_output=True,
+        text=True,
+        timeout=15.0,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    sub_ident = summarizer.validate_identity(json.loads(proc.stdout))
+    assert sub_ident["fingerprint"] == ident["fingerprint"]
 
 
 def test_organizer_emits_valid_summary_outcome_and_never_retries_unknown(
@@ -192,3 +207,22 @@ def test_enterprise_transport_env_and_staged_source_baseline(tmp_path: Path, mon
     monkeypatch.setenv("MINDIE_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("MINDIE_CONFIG_HOME", str(tmp_path / "config"))
     assert paths.repo_root() == staged_dst.resolve()
+
+    # Verify ensure_default_profile delegates community config setup to the provisioned interpreter
+    # when the calling process does not have mindie_knowledge installed
+    import importlib.util
+    import sys
+
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *a, **kw: None if name == "mindie_knowledge" else real_find_spec(name, *a, **kw),
+    )
+    cfg_out = setup.ensure_default_profile(
+        config=tmp_path / "config" / "wb.json",
+        workspace_root=tmp_path,
+        python_exe=sys.executable,
+    )
+    assert cfg_out["harness"] == "workbuddy"
+    assert (tmp_path / "config" / "mindie-community.json").is_file()

@@ -154,10 +154,7 @@ def _knowledge_mcp_tools() -> list[dict]:
         )
     ]
     for item in PRIVATE_KNOWLEDGE_CATALOG:
-        props = {k: {"type": "string"} for k in (*item["required"], *item["optional"])}
-        schema: dict = dict(type="object", properties=props, additionalProperties=True)
-        if item["required"]:
-            schema["required"] = list(item["required"])
+        schema = dict(item["inputSchema"])
         items.append(dict(name=item["name"], description=item["description"], inputSchema=schema))
     return items
 
@@ -346,30 +343,7 @@ def _resolve_claim(
     meta: dict | None = None,
     config=None,
 ) -> dict:
-    try:
-        return claim_bind(surface, tool_name, arguments, meta=meta, config=config)
-    except ValueError as exc:
-        if "must not declare session identity" in str(exc):
-            raise
-        env_session = (
-            os.environ.get("WB_CONVERSATION_ID")
-            or os.environ.get("CODEBUDDY_SESSION_ID")
-            or os.environ.get("AGY_CONVERSATION_ID")
-            or os.environ.get("REMOTE_DEV_SESSION_ID")
-        )
-        if isinstance(env_session, str) and env_session.strip():
-            return dict(
-                bind_id=None,
-                session=env_session.strip().lower(),
-                workspace_root=None,
-                transcript_path=None,
-            )
-        return dict(
-            bind_id=None,
-            session="wb-default-session",
-            workspace_root=None,
-            transcript_path=None,
-        )
+    return claim_bind(surface, tool_name, arguments, meta=meta, config=config)
 
 
 def _resolve_component_argv(adapter: dict, component: str) -> list[str]:
@@ -424,14 +398,15 @@ def call_remote_surface(
 ) -> dict:
     os.environ.setdefault("MINDIE_DIAGNOSTICS_CONFIG", str(diagnostics_config_path(config)))
     os.environ["REMOTE_DEV_HARNESS_PROFILE"] = "canonical"
-    args = dict(arguments or {})
-    if "yield_time_ms" in args and type(args["yield_time_ms"]) is int:
-        args["yield_time_ms"] = min(args["yield_time_ms"], MAX_YIELD_TIME_MS)
-    claim = _resolve_claim("remote", name, args, meta=meta, config=config)
+    raw_args = dict(arguments or {})
+    claim = _resolve_claim("remote", name, raw_args, meta=meta, config=config)
+    exec_args = dict(raw_args)
+    if "yield_time_ms" in exec_args and type(exec_args["yield_time_ms"]) is int:
+        exec_args["yield_time_ms"] = min(exec_args["yield_time_ms"], MAX_YIELD_TIME_MS)
     session, bind_id = claim["session"], claim.get("bind_id")
     receipt_store = receipts or RemoteReceipts(remote_receipts_path(config))
     call_id = str(uuid.uuid4())
-    receipt_store.begin(call_id, session, name, args)
+    receipt_store.begin(call_id, session, name, exec_args)
 
     root = state_dir(config) / "remote" / session
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -442,7 +417,7 @@ def call_remote_surface(
         from remote_dev.mcp.server import tool_text
         from remote_dev.mcp.tools import call_tool
 
-        raw = call_tool(name, args, profile="canonical")
+        raw = call_tool(name, exec_args, profile="canonical")
         is_error = bool(isinstance(raw, dict) and raw.get("ok") is False)
         succeeded = not is_error
         blocks = [dict(type="text", text=tool_text(raw))]

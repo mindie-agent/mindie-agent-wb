@@ -127,8 +127,12 @@ def stage_source_baseline(source_dir: str | Path | None = None, dest_dir: str | 
 
 
 def _attach_local_component_paths(py_exe: Path) -> None:
-    """Ensure `npu_top` and `mindie_debugger` sibling checkouts are importable in the runtime venv."""
+    """Ensure `npu_top` and `mindie_debugger` sibling checkouts are importable in `wb-venv`."""
     try:
+        wb_venv = (data_home() / "wb-venv").resolve()
+        venv_root = py_exe.expanduser().parent.parent.resolve()
+        if venv_root != wb_venv:
+            return
         probe = bounded_run(
             [
                 str(py_exe),
@@ -178,6 +182,9 @@ def _norm_python_path(py_exe: str | Path) -> Path:
 def _discover_existing_mindie_python() -> str | None:
     """Check existing MindIE virtualenvs on the host before running a full network `uv sync`."""
     candidates: list[Path] = []
+    env_py = os.environ.get("MINDIE_WB_PYTHON")
+    if isinstance(env_py, str) and env_py.strip():
+        candidates.append(Path(env_py.strip()))
     venv_dir = data_home() / "wb-venv"
     candidates.append(venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
     agy_venv = data_home() / "agy-venv"
@@ -286,6 +293,37 @@ def validate_contracts() -> dict:
     )
 
 
+def _write_initial_community_config(interpreter: str, comm_file: Path, payload: dict) -> None:
+    if importlib.util.find_spec("mindie_knowledge") is not None:
+        from mindie_knowledge.loop import settings as settings_mod
+
+        with settings_mod.CommunityWriteContext(comm_file) as ctx:
+            ctx.configure(comm_file, payload)
+        return
+    proc = bounded_run(
+        [
+            interpreter,
+            "-I",
+            "-c",
+            (
+                "import json, sys; from pathlib import Path; "
+                "from mindie_knowledge.loop import settings; "
+                "p = Path(sys.argv[1]); data = json.loads(sys.argv[2]); "
+                "ctx = settings.CommunityWriteContext(p); "
+                "ctx.__enter__(); "
+                "ctx.configure(p, data); "
+                "ctx.__exit__(None, None, None)"
+            ),
+            str(comm_file),
+            json.dumps(payload),
+        ],
+        "",
+        timeout=30.0,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"failed to initialize community config via {interpreter}: {proc.stderr or proc.stdout}")
+
+
 def ensure_default_profile(
     *,
     config: str | Path | None = None,
@@ -295,8 +333,6 @@ def ensure_default_profile(
 ) -> dict:
     apply_enterprise_transport_env()
     interpreter = ensure_runtime_python(python_exe=python_exe)
-
-    from mindie_knowledge.loop import settings as settings_mod
 
     cfg_file = config_path(config)
     eng_file = engine_config_path(cfg_file)
@@ -365,18 +401,18 @@ def ensure_default_profile(
 
     if not comm_file.is_file():
         roots = [str(Path(workspace_root).resolve())] if workspace_root else []
-        with settings_mod.CommunityWriteContext(comm_file) as ctx:
-            ctx.configure(
-                comm_file,
-                dict(
-                    enabled=False,
-                    repository="mindie-agent/knowledge-vllm-ascend",
-                    project_roots=roots,
-                    branch="main",
-                    idle_seconds=300,
-                    consent_config=str(cfile.resolve()),
-                ),
-            )
+        _write_initial_community_config(
+            interpreter,
+            comm_file,
+            dict(
+                enabled=False,
+                repository="mindie-agent/knowledge-vllm-ascend",
+                project_roots=roots,
+                branch="main",
+                idle_seconds=300,
+                consent_config=str(cfile.resolve()),
+            ),
+        )
 
     return adapter_payload
 
@@ -494,12 +530,29 @@ def configure_community(
     visibility: str = "public",
     repository: str = "mindie-agent/knowledge-vllm-ascend",
 ) -> dict:
-    from mindie_knowledge import consent_store
-    from mindie_knowledge.loop import settings as settings_mod
-
     cfg_file = config_path(config)
     if not cfg_file.is_file():
         ensure_default_profile(config=cfg_file, workspace_root=project_root)
+    if importlib.util.find_spec("mindie_knowledge") is None:
+        interpreter = read_json(cfg_file).get("python") or ensure_runtime_python()
+        argv = [str(interpreter), "-I", str(Path(__file__).resolve()), "sharing", "--config", str(cfg_file)]
+        argv.append("--enable" if enabled else "--disable")
+        if fork is not None:
+            argv.extend(["--fork", fork])
+        if project_root is not None:
+            argv.extend(["--project-root", str(project_root)])
+        if remote_project_root is not None:
+            argv.extend(["--remote-project-root", remote_project_root])
+        if visibility:
+            argv.extend(["--visibility", visibility])
+        proc = bounded_run(argv, "", timeout=30.0)
+        if proc.returncode != 0:
+            raise RuntimeError(f"failed to configure community sharing via {interpreter}: {proc.stderr or proc.stdout}")
+        return json.loads(proc.stdout.strip())
+
+    from mindie_knowledge import consent_store
+    from mindie_knowledge.loop import settings as settings_mod
+
     comm_file = community_config_path(cfg_file)
     cfile = consent_path(cfg_file).resolve()
     consent_store.record_choice(cfile, "contribute" if enabled else "disabled")

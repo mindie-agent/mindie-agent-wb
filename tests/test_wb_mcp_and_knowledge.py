@@ -67,7 +67,7 @@ def test_complete_mcp_tool_surfaces_exposed():
     }
     assert tool_names == expected_tools
 
-    # 3. All 6 MindIE knowledge & entry tools
+    # 3. All 6 MindIE knowledge & entry tools + accurate JSON Schema types
     expected_knowledge = {
         "mindie_entry",
         "knowledge_query",
@@ -78,6 +78,14 @@ def test_complete_mcp_tool_surfaces_exposed():
     }
     assert know_names == expected_knowledge
     assert len(remote_names) + len(tool_names) + len(know_names) == 40
+
+    know_by_name = {t["name"]: t["inputSchema"] for t in know_resp["result"]["tools"]}
+    assert know_by_name["knowledge_query"]["properties"]["limit"]["type"] == "integer"
+    assert know_by_name["knowledge_query"]["properties"]["conditions"]["type"] == "object"
+    assert know_by_name["knowledge_query"]["properties"]["include_unknown"]["type"] == "boolean"
+    assert know_by_name["knowledge_explain"]["properties"]["refs"]["type"] == "array"
+    assert know_by_name["knowledge_distill"]["properties"]["inputs"]["type"] == "array"
+    assert know_by_name["knowledge_distill"]["properties"]["proposal"]["type"] == "object"
 
 
 def test_mindie_entry_mcp_tool_activates_and_deactivates_session(tmp_path: Path):
@@ -229,12 +237,35 @@ def test_receipt_honesty_preserves_succeeded_remote_result_on_local_sqlite_error
     res = mcp_server.call_remote_surface(
         "remote_probe",
         {},
+        meta={"workbuddy.ai/conversationId": SESSION_A},
         receipts=BrokenFinishReceipts(),
     )
     assert res["isError"] is False
     assert res["structuredContent"]["ok"] is True
     assert res["structuredContent"]["receipt_unconfirmed"] is True
     assert "receipt_warning" in res["structuredContent"]
+
+
+def test_remote_surface_claims_original_arguments_before_clamping_yield_time_ms(monkeypatch: pytest.MonkeyPatch):
+    import identity
+    import remote_dev.mcp.tools as rd_tools
+
+    seen_args: list[dict] = []
+
+    def _fake_call_tool(name: str, args: dict, profile: str = "canonical") -> dict:
+        seen_args.append(dict(args))
+        return {"ok": True, "yield_time_ms": args.get("yield_time_ms")}
+
+    monkeypatch.setattr(rd_tools, "call_tool", _fake_call_tool)
+
+    # Publish PreToolUse bind with yield_time_ms=60000 (above 30000 clamp ceiling)
+    raw_input = {"command": "npu-smi info", "yield_time_ms": 60000}
+    identity.publish_bind(SESSION_A, "remote", "remote_bash", raw_input)
+
+    # Claim via PreToolUse without _meta; must match raw_input (60000) before clamping to 30000
+    res = mcp_server.call_remote_surface("remote_bash", raw_input)
+    assert res["isError"] is False
+    assert seen_args == [{"command": "npu-smi info", "yield_time_ms": 30000}]
 
 
 def test_remote_timeout_arithmetic_enforces_outer_greater_than_inner_plus_grace():
