@@ -206,3 +206,38 @@ def test_live_workbuddy_cli_plugin_validate():
         )
         assert proc.returncode == 0, f"codebuddy plugin validate failed on {target}: {proc.stderr}\n{proc.stdout}"
         assert "Validation passed" in proc.stdout
+
+
+def test_wb_knowledge_cli_explore_budget_and_rsi_wrappers(tmp_path: Path):
+    import experiment_ledger
+    import knowledge_cli
+    import rsi_loop
+
+    q_tool = next(t for t in knowledge_cli.PRIVATE_KNOWLEDGE_CATALOG if t["name"] == "knowledge_query")
+    e_tool = next(t for t in knowledge_cli.PRIVATE_KNOWLEDGE_CATALOG if t["name"] == "knowledge_explain")
+    assert q_tool["inputSchema"]["properties"]["token_budget"]["maximum"] == 64000
+    assert e_tool["inputSchema"]["properties"]["token_budget"]["maximum"] == 64000
+
+    ledger_path = tmp_path / "ledger.jsonl"
+    assert experiment_ledger.main(["render", "--ledger", str(ledger_path), "--task-id", "test-rsi"]) == 0
+    assert (
+        rsi_loop.main(
+            [
+                "init",
+                "--state",
+                str(tmp_path / "state.json"),
+                "--task-id",
+                "test-rsi",
+                "--ledger",
+                str(ledger_path),
+                "--baseline-repo",
+                str(REPO_ROOT),
+                "--direction",
+                "minimize",
+                "--repetitions",
+                "3",
+            ]
+        )
+        == 0
+    )
+
