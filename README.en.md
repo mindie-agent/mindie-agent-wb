@@ -1,5 +1,9 @@
 # MindIE Agent for Tencent WorkBuddy (`mindie-agent-wb`)
 
+<p>
+  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.2-0F766E.svg" alt="Release v0.1.2"></a>
+</p>
+
 Native plugin and UI Connector adapter for **Tencent WorkBuddy** (and its bundled `@genie/agent-cli` / `codebuddy` runtime), exposing the complete suite of **40 MindIE MCP tools**, lifecycle hooks, and L1–L4 graded knowledge skills.
 
 ## Complete MCP Tool Matrix (40 Tools Across 3 Servers)

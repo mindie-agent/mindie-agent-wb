@@ -8,6 +8,10 @@
   <b>腾讯 WorkBuddy（及底层 CodeBuddy Agent CLI）的原生插件与连接器（Connector）适配器，完整暴露 MindIE Agent 全栈 53 项 MCP 工具（含 13 项 WorkBuddy 原生远端开发工具镜像）、生命周期 Hooks 与分级知识飞轮 Skill</b>
 </p>
 
+<p align="center">
+  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.2-0F766E.svg" alt="Release v0.1.2"></a>
+</p>
+
 ## 1. 架构概览：连接器（Connector）与插件（Plugin）双重兼容
 
 WorkBuddy 桌面端界面中的 **Connector（连接器）** 底层即基于 **Agent Plugins 1.0.0** 规范构建并由内置 `@genie/agent-cli` (`codebuddy`) 运行时承载。本仓库同时实现：
