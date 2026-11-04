@@ -169,7 +169,12 @@ def _probe_runtime_python(py_exe: str | Path) -> bool:
     if not cand.is_file():
         return False
     probe = bounded_run(
-        [str(cand), "-I", "-c", "import mindie_knowledge, remote_dev, mindie_diagnostics"],
+        [
+            str(cand),
+            "-I",
+            "-c",
+            "import mindie_knowledge, remote_dev, mindie_diagnostics, mindie_profiler, mindie_sim, mindie_coordinator, mindie_debugger, npu_top",
+        ],
         "",
         timeout=15.0,
     )
@@ -343,7 +348,7 @@ def ensure_default_profile(
     adm_file = admission_path(cfg_file)
     comm_file = community_config_path(cfg_file)
     scripts_dir = Path(__file__).resolve().parent
-    data_root = data_home() / "domains" / domain
+    data_root = data_home() / "domains"
     sdir.mkdir(mode=0o700, parents=True, exist_ok=True)
     data_root.mkdir(mode=0o700, parents=True, exist_ok=True)
 
@@ -683,6 +688,20 @@ def configure_community(
     return updated.as_dict()
 
 
+def _reexec_stdio(stream):
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            if msvcrt.get_osfhandle(stream.fileno()) in (-1, -2, 0):
+                return subprocess.DEVNULL
+        else:
+            stream.fileno()
+        return stream
+    except Exception:
+        return subprocess.DEVNULL
+
+
 def main(argv: list[str] | None = None) -> int:
     apply_enterprise_transport_env()
     raw_argv = list(sys.argv[1:] if argv is None else argv)
@@ -697,7 +716,13 @@ def main(argv: list[str] | None = None) -> int:
         env = apply_enterprise_transport_env(dict(os.environ))
         env["_MINDIE_WB_SETUP_BOOTSTRAPPED"] = "1"
         env["MINDIE_WB_SOURCE_ROOT"] = str(staged_src)
-        proc = subprocess.run([target_py, "-I", str(Path(__file__).resolve()), *raw_argv], env=env)
+        run_kwargs: dict = {"env": env}
+        if os.name == "nt":
+            run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            run_kwargs["stdin"] = _reexec_stdio(sys.stdin)
+            run_kwargs["stdout"] = _reexec_stdio(sys.stdout)
+            run_kwargs["stderr"] = _reexec_stdio(sys.stderr)
+        proc = subprocess.run([target_py, "-I", str(Path(__file__).resolve()), *raw_argv], **run_kwargs)
         return int(proc.returncode)
 
     parser = argparse.ArgumentParser(description="Configure MindIE Agent for Tencent WorkBuddy")

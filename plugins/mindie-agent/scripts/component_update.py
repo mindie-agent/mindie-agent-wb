@@ -85,12 +85,16 @@ def trigger_background_update_if_due(*, config: str | Path | None = None) -> boo
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            close_fds=True,
             env=env,
         )
         if os.name == "nt":
+            # Do not combine DETACHED_PROCESS with CREATE_NO_WINDOW: Windows ignores
+            # CREATE_NO_WINDOW when DETACHED_PROCESS is set, causing uv venv launcher
+            # trampolines (Scripts\python.exe) and child git/uv processes to allocate
+            # and flash a visible console window.
             kwargs["creationflags"] = (
                 getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-                | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
                 | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
             )
         else:
@@ -164,6 +168,7 @@ def prepare(
         python=current_python,
         timeout=min(420.0, remaining(5.0)),
         env=apply_enterprise_transport_env(dict(os.environ)),
+        files=["pyproject.toml", "product-contract.json", "harness-compatibility.json"],
     )
     return artifact
 

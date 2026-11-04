@@ -45,7 +45,8 @@ def ensure_wb_knowledge_registry() -> None:
 
 def _build_wb_specs() -> dict[str, Any]:
     from remote_dev.core.errors import caller_error
-    from remote_dev.mcp.native_spec import NativeToolSpec, _forbid_fields, _require_int
+    from remote_dev.mcp import native_spec as _ns
+    from remote_dev.mcp.native_spec import NativeToolSpec
     from remote_dev.mcp.profiles_claude import (
         CLAUDE_BASH,
         CLAUDE_EDIT,
@@ -56,7 +57,35 @@ def _build_wb_specs() -> dict[str, Any]:
         CLAUDE_WRITE,
     )
 
-    def _wb_multi_edit(args: Mapping[str, Any], _spec: NativeToolSpec) -> dict[str, Any]:
+    _ep_args = getattr(_ns, "_endpoint_args", lambda a: {})
+
+    def _default_require_int(val: Any, field: str, *, minimum: int | None = None, maximum: int | None = None) -> int:
+        if isinstance(val, bool) or not isinstance(val, int):
+            raise caller_error(f"{field} must be an integer", field=field)
+        if minimum is not None and val < minimum:
+            raise caller_error(f"{field} must be >= {minimum}", field=field)
+        if maximum is not None and val > maximum:
+            raise caller_error(f"{field} must be <= {maximum}", field=field)
+        return int(val)
+
+    def _default_forbid_fields(base_norm: Any, forbidden: Mapping[str, str]) -> Any:
+        def _wrapped(args: Mapping[str, Any], *extra: Any) -> dict[str, Any]:
+            for key, msg in forbidden.items():
+                if args.get(key) is not None:
+                    raise caller_error(msg, field=key)
+            if base_norm is None:
+                return dict(args)
+            try:
+                return base_norm(args, *extra)
+            except TypeError:
+                return base_norm(args)
+
+        return _wrapped
+
+    _require_int = getattr(_ns, "_require_int", _default_require_int)
+    _forbid_fields = getattr(_ns, "_forbid_fields", _default_forbid_fields)
+
+    def _wb_multi_edit(args: Mapping[str, Any], _spec: NativeToolSpec | None = None) -> dict[str, Any]:
         edits_raw = args.get("edits")
         if not isinstance(edits_raw, list) or not edits_raw:
             raise caller_error("edits must be a non-empty list", field="edits")
@@ -73,10 +102,10 @@ def _build_wb_specs() -> dict[str, Any]:
                     "replace_all": bool(item.get("replace_all", False)),
                 }
             )
-        return {"file_path": args["file_path"], "edits": normalized_edits}
+        return {**_ep_args(args), "file_path": args["file_path"], "edits": normalized_edits}
 
-    def _wb_glob(args: Mapping[str, Any], _spec: NativeToolSpec) -> dict[str, Any]:
-        out: dict[str, Any] = {"pattern": args["pattern"]}
+    def _wb_glob(args: Mapping[str, Any], _spec: NativeToolSpec | None = None) -> dict[str, Any]:
+        out: dict[str, Any] = {**_ep_args(args), "pattern": args["pattern"]}
         if args.get("path") is not None:
             out["path"] = args["path"]
         if args.get("limit") is not None:
@@ -95,23 +124,24 @@ def _build_wb_specs() -> dict[str, Any]:
         except re.error as exc:
             raise caller_error(f"Invalid regular expression in {field}: {exc}", field=field) from exc
 
-    def _wb_task_output_norm(args: Mapping[str, Any], _spec: NativeToolSpec) -> dict[str, Any]:
+    def _wb_task_output_norm(args: Mapping[str, Any], _spec: NativeToolSpec | None = None) -> dict[str, Any]:
         timeout = _require_int(args.get("timeout", 60000), "timeout", minimum=0, maximum=600000)
         _validate_regex(args.get("filter"), "filter")
         return {
+            **_ep_args(args),
             "job_id": args["task_id"],
             "yield_time_ms": min(timeout, 30000) if args.get("block", True) is not False else 0,
         }
 
-    def _wb_bash_output_norm(args: Mapping[str, Any], _spec: NativeToolSpec) -> dict[str, Any]:
+    def _wb_bash_output_norm(args: Mapping[str, Any], _spec: NativeToolSpec | None = None) -> dict[str, Any]:
         _validate_regex(args.get("filter"), "filter")
-        return {"job_id": args["shell_id"], "yield_time_ms": 0}
+        return {**_ep_args(args), "job_id": args["shell_id"], "yield_time_ms": 0}
 
-    def _wb_kill_shell_norm(args: Mapping[str, Any], _spec: NativeToolSpec) -> dict[str, Any]:
-        return {"job_id": args["shell_id"]}
+    def _wb_kill_shell_norm(args: Mapping[str, Any], _spec: NativeToolSpec | None = None) -> dict[str, Any]:
+        return {**_ep_args(args), "job_id": args["shell_id"]}
 
-    def _wb_view_image_norm(args: Mapping[str, Any], _spec: NativeToolSpec) -> dict[str, Any]:
-        out: dict[str, Any] = {"file_path": args["image_path"], "path": args["image_path"]}
+    def _wb_view_image_norm(args: Mapping[str, Any], _spec: NativeToolSpec | None = None) -> dict[str, Any]:
+        out: dict[str, Any] = {**_ep_args(args), "file_path": args["image_path"], "path": args["image_path"]}
         if args.get("query") is not None:
             out["query"] = str(args["query"])
         return out

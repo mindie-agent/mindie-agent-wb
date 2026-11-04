@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.3-0F766E.svg" alt="Release v0.1.3"></a>
+  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.4-0F766E.svg" alt="Release v0.1.4"></a>
 </p>
 
 ## 1. 架构概览：连接器（Connector）与插件（Plugin）双重兼容

@@ -238,3 +238,43 @@ def test_enterprise_transport_env_and_staged_source_baseline(tmp_path: Path, mon
     assert comm_out["enabled"] is True
     assert comm_out["account"] == "custom-owner"
     assert comm_out["repository"] == "mindie-agent/knowledge-operators"
+
+
+def test_windows_subprocess_creationflags_prevent_console_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import subprocess
+    import sys
+    import bounded
+
+    seen_bounded: list[dict] = []
+    real_popen = subprocess.Popen
+
+    def spy_popen(argv, **kwargs):
+        seen_bounded.append(dict(kwargs))
+        return real_popen(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", spy_popen)
+    out = bounded.run([sys.executable, "-c", "print('ok')"], timeout=5.0)
+    assert out.returncode == 0
+    assert seen_bounded
+    if bounded.os.name == "nt":
+        flags = seen_bounded[-1]["creationflags"]
+        assert flags & getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        assert flags & getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+
+    cfg_file = tmp_path / "wb.json"
+    cfg_file.write_text(json.dumps({"python": sys.executable}), encoding="utf-8")
+    monkeypatch.delenv("MINDIE_CONFIG_HOME", raising=False)
+    monkeypatch.setattr(component_update, "os", type("NT", (), {"name": "nt", "environ": {}}))
+    bg_calls: list[dict] = []
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda argv, **kwargs: bg_calls.append(dict(kwargs)),
+    )
+    assert component_update.trigger_background_update_if_due(config=cfg_file) is True
+    assert len(bg_calls) == 1
+    bg_flags = bg_calls[0]["creationflags"]
+    assert bg_flags & getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    assert bg_flags & getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+    assert not (bg_flags & getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
+

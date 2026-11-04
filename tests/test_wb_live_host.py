@@ -244,7 +244,7 @@ def test_live_npu_cluster_observation_and_remote_probe():
                     "method": "tools/call",
                     "params": {
                         "name": "npu_top",
-                        "arguments": {"argv": ["inventory"]},
+                        "arguments": {"argv": ["inventory", "--help"]},
                         "_meta": {"workbuddy.ai/conversationId": LIVE_SESSION},
                     },
                 }

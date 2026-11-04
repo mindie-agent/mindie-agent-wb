@@ -162,7 +162,10 @@ def run(
                 cwd=str(cwd) if cwd is not None else None,
             )
             if os.name == "nt":
-                popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                popen_kwargs["creationflags"] = (
+                    getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                )
             else:
                 popen_kwargs["start_new_session"] = True
 

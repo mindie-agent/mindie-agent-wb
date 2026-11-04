@@ -44,6 +44,20 @@ def _norm_python_path(py_exe: str | Path) -> Path:
     return p.parent.resolve() / p.name
 
 
+def _has_full_wb_components(py_exe: str | Path) -> bool:
+    p = Path(py_exe)
+    if not p.is_file():
+        return False
+    dbg_bin = p.parent / ("mindie-debugger.exe" if os.name == "nt" else "mindie-debugger")
+    if dbg_bin.is_file():
+        return True
+    venv_root = p.parent.parent
+    for sp in (venv_root / "Lib" / "site-packages", *venv_root.glob("lib/python*/site-packages")):
+        if (sp / "mindie_debugger").is_dir():
+            return True
+    return False
+
+
 def _preferred_python() -> str | None:
     cfg = config_path()
     if cfg.is_file():
@@ -59,23 +73,39 @@ def _preferred_python() -> str | None:
     for venv_name in ("wb-venv", "agy-venv"):
         vdir = data_home() / venv_name
         for candidate in (vdir / "Scripts" / "python.exe", vdir / "bin" / "python"):
-            if candidate.is_file():
+            if _has_full_wb_components(candidate):
                 return str(_norm_python_path(candidate))
     search_dirs = [cfg.parent]
     host_cfg_dir = Path.home() / ".config" / "mindie-agent"
     if host_cfg_dir not in search_dirs:
         search_dirs.append(host_cfg_dir)
     for cdir in search_dirs:
-        for sibling_cfg in ("wb.json", "codex.json", "agy.json", "cc.json", "kimi.json"):
+        for sibling_cfg in ("wb.json", "agy.json", "codex.json", "cc.json", "kimi.json"):
             scfg = cdir / sibling_cfg
             if scfg.is_file():
                 try:
                     py = read_json(scfg).get("python")
-                    if isinstance(py, str) and ".venv" in py and Path(py).is_file():
+                    if isinstance(py, str) and _has_full_wb_components(py):
                         return str(_norm_python_path(py))
                 except ValueError:
                     pass
     return None
+
+
+def _reexec_stdio(stream):
+    import subprocess
+
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            if msvcrt.get_osfhandle(stream.fileno()) in (-1, -2, 0):
+                return subprocess.DEVNULL
+        else:
+            stream.fileno()
+        return stream
+    except Exception:
+        return subprocess.DEVNULL
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -95,7 +125,13 @@ def main(argv: list[str] | None = None) -> int:
         env["PYTHONIOENCODING"] = "utf-8"
         import subprocess
 
-        proc = subprocess.run([target_py, "-I", str(Path(__file__).resolve()), *argv], env=env)
+        run_kwargs: dict = {"env": env}
+        if os.name == "nt":
+            run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            run_kwargs["stdin"] = _reexec_stdio(sys.stdin)
+            run_kwargs["stdout"] = _reexec_stdio(sys.stdout)
+            run_kwargs["stderr"] = _reexec_stdio(sys.stderr)
+        proc = subprocess.run([target_py, "-I", str(Path(__file__).resolve()), *argv], **run_kwargs)
         return int(proc.returncode)
 
     role = argv[0]
