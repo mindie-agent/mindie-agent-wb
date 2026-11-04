@@ -257,6 +257,91 @@ def test_help_and_dry_run_do_not_bootstrap(monkeypatch, capsys):
         assert payload["uv"] == __import__("shutil").which("uv")
 
 
+def test_abbreviated_dry_run_never_mounts_or_enables(monkeypatch, capsys, isolated_mindie_env):
+    """``--dry`` is a parsed ``--dry-run``. It must not stage, mount, or enable contribute."""
+    import setup
+
+    roots = [
+        isolated_mindie_env["config_home"],
+        isolated_mindie_env["data_home"],
+        isolated_mindie_env["wb_home"],
+        isolated_mindie_env["cb_home"],
+    ]
+
+    def _listing(root: Path) -> list[str]:
+        return sorted(str(path.relative_to(root)) for path in root.rglob("*"))
+
+    before = {str(root): _listing(root) for root in roots}
+    calls: list[str] = []
+
+    def _forbid(name: str):
+        def _inner(*_args, **_kwargs):
+            calls.append(name)
+            raise AssertionError(f"abbreviated dry-run must not call {name}")
+
+        return _inner
+
+    monkeypatch.delenv("_MINDIE_WB_SETUP_BOOTSTRAPPED", raising=False)
+    monkeypatch.setattr(setup.importlib.util, "find_spec", lambda _name: None)
+    monkeypatch.setattr(
+        setup,
+        "apply_enterprise_transport_env",
+        lambda target=None: calls.append("apply_enterprise_transport_env") or ({} if target is None else target),
+    )
+    for name in (
+        "stage_source_baseline",
+        "ensure_runtime_python",
+        "ensure_default_profile",
+        "install_workbuddy_plugin",
+        "configure_community",
+    ):
+        monkeypatch.setattr(setup, name, _forbid(name))
+
+    def _reexec(*_args, **_kwargs):
+        calls.append("subprocess")
+        raise AssertionError("abbreviated dry-run must not re-exec setup")
+
+    monkeypatch.setattr(setup.subprocess, "run", _reexec)
+
+    pairs = (
+        (["init", "--install-wb", "--dry-run"], ["init", "--install-wb", "--dry"]),
+        (["init", "--install-wb", "--dry-run"], ["init", "--install-wb", "--dry-r"]),
+        (["--dry-run", "init", "--install-wb"], ["--dry", "init", "--install-wb"]),
+        (["--dry-run", "install-wb"], ["--dry", "install-wb"]),
+        (["install-wb", "--dry-run"], ["install-wb", "--dry"]),
+        (["init", "--dry-run"], ["init", "--dry"]),
+        (["sharing", "--enable", "--dry-run"], ["sharing", "--enable", "--dry"]),
+        (["--dry-run", "sharing", "--enable"], ["--dry", "sharing", "--enable"]),
+        (["sharing", "--enable", "--dry-run"], ["sharing", "--dry", "--enable"]),
+        (["--dry-run"], ["--dry"]),
+    )
+    for full, short in pairs:
+        assert setup.main(full) == 0, full
+        full_payload = json.loads(capsys.readouterr().out)
+        assert setup.main(short) == 0, short
+        short_payload = json.loads(capsys.readouterr().out)
+        assert short_payload == full_payload
+        assert short_payload["status"] == "dry-run"
+        assert short_payload["bootstrap"] is False
+        if "sharing" in short:
+            assert short_payload["cmd"] == "sharing"
+            assert short_payload["install_workbuddy_plugin"] is False
+        elif short_payload["cmd"] is None:
+            assert short_payload["install_workbuddy_plugin"] is False
+        else:
+            assert short_payload["cmd"] in {"init", "install-wb"}
+            assert short_payload["install_workbuddy_plugin"] is ("--install-wb" in short or "install-wb" in short)
+
+    for argv in (["sharing", "--enable", "--d"], ["init", "--install-wb", "--not-a-flag"]):
+        with pytest.raises(SystemExit) as exc:
+            setup.main(argv)
+        assert exc.value.code == 2, argv
+        capsys.readouterr()
+
+    assert calls == []
+    assert {str(root): _listing(root) for root in roots} == before
+
+
 def test_install_wb_flag_is_the_only_mount_path(monkeypatch, capsys):
     import setup
 
@@ -275,6 +360,11 @@ def test_install_wb_flag_is_the_only_mount_path(monkeypatch, capsys):
     )
 
     assert setup.main(["init"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"harness": "workbuddy"}
+    assert calls == ["profile"]
+
+    calls.clear()
+    assert setup.main([]) == 0
     assert json.loads(capsys.readouterr().out) == {"harness": "workbuddy"}
     assert calls == ["profile"]
 
@@ -334,6 +424,13 @@ def test_onboarding_references_target_workbuddy():
     assert "codex app" not in workspace.lower()
     assert "wb.json" in notice and "mindie-consent.json" in notice
     assert "gh auth login" in auth
+    assert "gh auth setup-git --hostname github.com" in auth
+    assert "credential.https://github.com.helper" in auth
+    assert "GCM_INTERACTIVE=never" in auth
+    safe_unset = "git config --system --unset-all credential.helper helper-selector"
+    assert safe_unset in auth
+    assert auth.count("git config --system --unset-all credential.helper") == 1
+    assert "manager" in auth
     for text in (readme, english):
         assert "init --install-wb" in text
         assert "user-notice.md" in text

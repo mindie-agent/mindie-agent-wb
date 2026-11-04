@@ -40,18 +40,27 @@ tasks do not need another login check or choice.
    manage storage without `--insecure-storage`. A stale `GH_TOKEN` or
    `GITHUB_TOKEN` overrides saved login: repair that caller's credential
    source rather than repeatedly logging in under the stale environment.
-6. Verify the expected account again, ensure `git`'s directory is on `PATH`
-   (since `gh` shells out to `git`), and on Windows clear any unscoped
-   `helper-selector` in system `etc/gitconfig` (`git config --system --unset-all credential.helper`
-   and `GCM_INTERACTIVE=never` so GUI dialogs cannot block non-interactive commands;
-   if Windows `schannel` behind a corporate proxy fails with `CRYPT_E_NO_REVOCATION_CHECK`,
-   set `http.sslBackend=schannel` and `http.schannelCheckRevoke=false` while keeping
-   `http.sslVerify=true`), then run `gh auth setup-git --hostname github.com`, and read
-   the actual target repository before continuing. For saved login, also verify in a child
-   process without `GH_TOKEN`/`GITHUB_TOKEN`, using the same user and
-   `GH_CONFIG_DIR`. Handle 401 as credential expiry/rejection and investigate
-   repository access, permissions or SSO for 403/404. Do not create test
-   PRs/Issues or replay an uncertain write to test authentication.
+6. Verify the expected account again and ensure `git`'s directory is on `PATH`
+   (since `gh` shells out to `git`). On Windows, keep the system credential
+   helpers already installed, including Git Credential Manager (`manager`) and
+   any blank `credential.helper` line. Set `GCM_INTERACTIVE=never` so GUI
+   dialogs cannot block non-interactive commands. If Windows `schannel` behind
+   a corporate proxy fails with `CRYPT_E_NO_REVOCATION_CHECK`, set
+   `http.sslBackend=schannel` and `http.schannelCheckRevoke=false` while keeping
+   `http.sslVerify=true`. Prefer a GitHub-scoped override: run
+   `gh auth setup-git --hostname github.com`, which writes
+   `credential.https://github.com.helper` for GitHub and leaves system
+   `credential.helper` entries unchanged. If
+   `git config --system --get-all credential.helper` still lists an unscoped
+   `helper-selector` that intercepts GitHub, remove only that value:
+   `git config --system --unset-all credential.helper helper-selector`.
+   The final argument is a value pattern, so this matches `helper-selector`
+   and leaves `manager` in place. Then read the actual target repository
+   before continuing. For saved login, also verify in a child process without
+   `GH_TOKEN`/`GITHUB_TOKEN`, using the same user and `GH_CONFIG_DIR`. Handle
+   401 as credential expiry/rejection and investigate repository access,
+   permissions or SSO for 403/404. Do not create test PRs/Issues or replay an
+   uncertain write to test authentication.
 
 Future Git/API operations reuse the same `gh` credentials. Keep existing
 contribution consent, account binding and project scope. If the account differs,

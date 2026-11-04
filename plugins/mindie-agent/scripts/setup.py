@@ -11,7 +11,9 @@ registers the plugin & connector in `~/.workbuddy/plugins/` (`install-wb`).
   MindIE-owned JSON configs atomically via `os.replace()` and never activate a
   session lease or start the background knowledge loop.
 - `install_workbuddy_plugin` runs only for `install-wb` and `init --install-wb`.
-- `--help`, `-h`, and `--dry-run` do not bootstrap a runtime or write config.
+- `--help`, `-h`, and parsed `--dry-run` (including a unique abbreviation such as
+  `--dry`) do not bootstrap a runtime or write config. Read-only is decided
+  from parsed options before staging, bootstrap, or any profile write.
 
 [Timeouts & Locks]
 - Local config validation/writes are immediate; first-time `uv sync` runtime
@@ -532,49 +534,28 @@ def _dry_plan(cmd: str | None, install: bool) -> dict:
     }
 
 
-def _add_dry_run(parser: argparse.ArgumentParser) -> None:
+def _add_dry_run(parser: argparse.ArgumentParser, *, suppress_default: bool = False) -> None:
+    """Register ``--dry-run``.
+
+    Subparsers suppress the ``store_true`` default. A shared default of False
+    would overwrite a parent ``--dry-run`` or ``--dry`` already stored on the
+    same destination.
+    """
     parser.add_argument(
         "--dry-run",
         action="store_true",
+        default=argparse.SUPPRESS if suppress_default else False,
         help="Print the plan only; do not bootstrap a runtime or write config",
     )
 
 
-def main(argv: list[str] | None = None) -> int:
-    incoming = list(sys.argv[1:] if argv is None else argv)
-    dry_run = "--dry-run" in incoming
-    raw_argv = [arg for arg in incoming if arg != "--dry-run"]
-    wants_help = any(arg in {"-h", "--help"} for arg in raw_argv)
-    if not incoming:
-        raw_argv = ["init"]
-    if not dry_run and not wants_help:
-        apply_enterprise_transport_env()
-        if (
-            importlib.util.find_spec("mindie_knowledge") is None
-            and os.environ.get("_MINDIE_WB_SETUP_BOOTSTRAPPED") != "1"
-        ):
-            staged_src = stage_source_baseline()
-            target_py = ensure_runtime_python(staged_src)
-            env = apply_enterprise_transport_env(dict(os.environ))
-            env["_MINDIE_WB_SETUP_BOOTSTRAPPED"] = "1"
-            env["MINDIE_WB_SOURCE_ROOT"] = str(staged_src)
-            run_kwargs: dict = {"env": env}
-            if os.name == "nt":
-                run_kwargs.update(
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                    stdin=_reexec_stdio(sys.stdin),
-                    stdout=_reexec_stdio(sys.stdout),
-                    stderr=_reexec_stdio(sys.stderr),
-                )
-            proc = subprocess.run([target_py, "-I", str(Path(__file__).resolve()), *raw_argv], **run_kwargs)
-            return int(proc.returncode)
-
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Configure MindIE Agent for Tencent WorkBuddy")
     _add_dry_run(parser)
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub = parser.add_subparsers(dest="cmd", required=False)
 
     init_p = sub.add_parser("init")
-    _add_dry_run(init_p)
+    _add_dry_run(init_p, suppress_default=True)
     init_p.add_argument("--config", default=None)
     init_p.add_argument("--workspace-root", default=None)
     init_p.add_argument("--domain", default="vllm-ascend")
@@ -586,12 +567,12 @@ def main(argv: list[str] | None = None) -> int:
     init_p.add_argument("--wb-dir", default=None, help="Explicit ~/.workbuddy directory")
 
     inst_p = sub.add_parser("install-wb", help="Mount the Connector and native plugin via install_workbuddy_plugin")
-    _add_dry_run(inst_p)
+    _add_dry_run(inst_p, suppress_default=True)
     inst_p.add_argument("--config", default=None)
     inst_p.add_argument("--wb-dir", default=None)
 
     share_p = sub.add_parser("sharing")
-    _add_dry_run(share_p)
+    _add_dry_run(share_p, suppress_default=True)
     share_p.add_argument("--config", default=None)
     share_p.add_argument("--enable", action="store_true")
     share_p.add_argument("--disable", action="store_true")
@@ -601,13 +582,55 @@ def main(argv: list[str] | None = None) -> int:
     share_p.add_argument("--remote-project-root", default=None)
     share_p.add_argument("--visibility", default="public")
     share_p.add_argument("--repository", default="mindie-agent/knowledge-vllm-ascend")
+    return parser
 
-    if dry_run and not raw_argv:
-        return _emit_json(_dry_plan(None, False))
-    args = parser.parse_args(raw_argv)
-    if dry_run:
-        install = args.cmd == "install-wb" or (args.cmd == "init" and bool(args.install_wb))
-        return _emit_json(_dry_plan(args.cmd, install))
+
+def _parsed_dry_run(args: argparse.Namespace) -> bool:
+    """True when argparse accepted ``--dry-run``, including a unique prefix such as ``--dry``."""
+    return bool(getattr(args, "dry_run", False))
+
+
+def _dry_install(args: argparse.Namespace) -> bool:
+    if args.cmd == "install-wb":
+        return True
+    return args.cmd == "init" and bool(getattr(args, "install_wb", False))
+
+
+def main(argv: list[str] | None = None) -> int:
+    incoming = list(sys.argv[1:] if argv is None else argv)
+    if not incoming:
+        incoming = ["init"]
+
+    # Parse before staging or bootstrap. Help and usage errors exit here.
+    # Read-only follows the parsed flag, so ``--dry`` cannot fall through to writes.
+    parser = _build_parser()
+    args = parser.parse_args(incoming)
+    if _parsed_dry_run(args):
+        return _emit_json(_dry_plan(args.cmd, _dry_install(args)))
+    if args.cmd not in {"init", "install-wb", "sharing"}:
+        parser.error("a command is required: init | install-wb | sharing")
+
+    apply_enterprise_transport_env()
+    if (
+        importlib.util.find_spec("mindie_knowledge") is None
+        and os.environ.get("_MINDIE_WB_SETUP_BOOTSTRAPPED") != "1"
+    ):
+        staged_src = stage_source_baseline()
+        target_py = ensure_runtime_python(staged_src)
+        env = apply_enterprise_transport_env(dict(os.environ))
+        env["_MINDIE_WB_SETUP_BOOTSTRAPPED"] = "1"
+        env["MINDIE_WB_SOURCE_ROOT"] = str(staged_src)
+        run_kwargs: dict = {"env": env}
+        if os.name == "nt":
+            run_kwargs.update(
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                stdin=_reexec_stdio(sys.stdin),
+                stdout=_reexec_stdio(sys.stdout),
+                stderr=_reexec_stdio(sys.stderr),
+            )
+        proc = subprocess.run([target_py, "-I", str(Path(__file__).resolve()), *incoming], **run_kwargs)
+        return int(proc.returncode)
+
     if args.cmd == "init":
         result = ensure_default_profile(
             config=args.config,
@@ -619,7 +642,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "install-wb":
         ensure_default_profile(config=args.config)
         result = install_workbuddy_plugin(wb_dir=args.wb_dir, config=args.config)
-    else:
+    elif args.cmd == "sharing":
         enabled = True if args.enable else False if args.disable else True
         result = configure_community(
             config=args.config,
