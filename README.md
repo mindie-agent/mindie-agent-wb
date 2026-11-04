@@ -84,7 +84,7 @@ WorkBuddy 桌面端界面中的 **Connector（连接器）** 底层即基于 **A
      "$MINDIE_TMP/plugins/mindie-agent/scripts/setup.py" init --install-wb --workspace-root "$PWD"
    ```
 
-   `--help`、`-h` 和 `--dry-run` 只打印说明或计划，不拉取运行时，也不写配置：
+   `--help`、`-h` 和 `--dry-run`（含唯一缩写，例如 `--dry`）只打印说明或计划，不拉取运行时，也不写配置：
 
    ```sh
    python3 plugins/mindie-agent/scripts/setup.py --help

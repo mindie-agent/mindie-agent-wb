@@ -39,7 +39,7 @@ UV_SYSTEM_CERTS=true UV_NATIVE_TLS=true uv run --no-project --python 3.13 python
   "$MINDIE_TMP/plugins/mindie-agent/scripts/setup.py" init --install-wb --workspace-root "$PWD"
 ```
 
-`--help` and `--dry-run` print usage or a plan. They do not bootstrap `wb-venv` and they do not write config:
+`--help` and `--dry-run` (including a unique abbreviation such as `--dry`) print usage or a plan. They do not bootstrap `wb-venv` and they do not write config:
 
 ```bash
 python3 plugins/mindie-agent/scripts/setup.py --help
