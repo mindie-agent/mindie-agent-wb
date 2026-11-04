@@ -208,6 +208,140 @@ def test_live_workbuddy_cli_plugin_validate():
         assert "Validation passed" in proc.stdout
 
 
+def test_help_and_dry_run_do_not_bootstrap(monkeypatch, capsys):
+    import setup
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("read-only setup must not bootstrap or write")
+
+    monkeypatch.delenv("_MINDIE_WB_SETUP_BOOTSTRAPPED", raising=False)
+    monkeypatch.setattr(setup.importlib.util, "find_spec", lambda _name: None)
+    monkeypatch.setattr(setup, "apply_enterprise_transport_env", lambda target=None: {} if target is None else target)
+    for name in (
+        "stage_source_baseline",
+        "ensure_runtime_python",
+        "ensure_default_profile",
+        "install_workbuddy_plugin",
+        "configure_community",
+    ):
+        monkeypatch.setattr(setup, name, _boom)
+
+    for argv in (["--help"], ["-h"], ["init", "--help"], ["install-wb", "--help"], ["sharing", "--help"]):
+        with pytest.raises(SystemExit) as exc:
+            setup.main(argv)
+        assert exc.value.code == 0
+        assert "--dry-run" in capsys.readouterr().out
+
+    cases = (
+        (["--dry-run"], None, False),
+        (["init", "--dry-run"], "init", False),
+        (["init", "--install-wb", "--dry-run"], "init", True),
+        (["--dry-run", "install-wb"], "install-wb", True),
+        (["sharing", "--enable", "--dry-run"], "sharing", False),
+    )
+    for argv, cmd, install in cases:
+        assert setup.main(argv) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload == {
+            "schema": "mindie-wb-setup/1",
+            "status": "dry-run",
+            "bootstrap": False,
+            "cmd": cmd,
+            "uv": payload["uv"],
+            "gh": payload["gh"],
+            "install_workbuddy_plugin": install,
+            "registers_native_plugin": install,
+            "registers_connector_if_marketplace_present": install,
+            "profile_only": cmd in (None, "init") and not install,
+        }
+        assert payload["uv"] == __import__("shutil").which("uv")
+
+
+def test_install_wb_flag_is_the_only_mount_path(monkeypatch, capsys):
+    import setup
+
+    calls: list[str] = []
+    monkeypatch.setenv("_MINDIE_WB_SETUP_BOOTSTRAPPED", "1")
+    monkeypatch.setattr(setup, "apply_enterprise_transport_env", lambda target=None: {} if target is None else target)
+    monkeypatch.setattr(
+        setup,
+        "ensure_default_profile",
+        lambda **_kwargs: calls.append("profile") or {"harness": "workbuddy"},
+    )
+    monkeypatch.setattr(
+        setup,
+        "install_workbuddy_plugin",
+        lambda **_kwargs: calls.append("install") or {"status": "installed", "enabled": True},
+    )
+
+    assert setup.main(["init"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"harness": "workbuddy"}
+    assert calls == ["profile"]
+
+    calls.clear()
+    assert setup.main(["init", "--install-wb"]) == 0
+    mounted = json.loads(capsys.readouterr().out)
+    assert mounted["workbuddy_install"]["status"] == "installed"
+    assert calls == ["profile", "install"]
+
+    calls.clear()
+    assert setup.main(["install-wb"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "installed"
+    assert calls == ["profile", "install"]
+
+
+def test_missing_runtime_reexec_is_skipped_for_help(monkeypatch, capsys):
+    import sys
+    import setup
+
+    seen: dict[str, object] = {}
+    monkeypatch.delenv("_MINDIE_WB_SETUP_BOOTSTRAPPED", raising=False)
+    monkeypatch.setattr(setup.importlib.util, "find_spec", lambda _name: None)
+    monkeypatch.setattr(setup, "apply_enterprise_transport_env", lambda target=None: {} if target is None else target)
+    monkeypatch.setattr(setup, "stage_source_baseline", lambda *_a, **_k: seen.setdefault("calls", []).append("stage") or Path("."))
+    monkeypatch.setattr(
+        setup,
+        "ensure_runtime_python",
+        lambda *_a, **_k: seen.setdefault("calls", []).append("python") or sys.executable,
+    )
+
+    def _run(argv, **_kwargs):
+        seen["argv"] = list(argv)
+        return type("Proc", (), {"returncode": 7})()
+
+    monkeypatch.setattr(setup.subprocess, "run", _run)
+    assert setup.main(["init", "--install-wb"]) == 7
+    assert seen["calls"] == ["stage", "python"]
+    assert seen["argv"][-2:] == ["init", "--install-wb"]
+
+    seen.clear()
+    with pytest.raises(SystemExit) as exc:
+        setup.main(["--help"])
+    assert exc.value.code == 0
+    assert seen == {}
+    assert "--dry-run" in capsys.readouterr().out
+
+
+def test_onboarding_references_target_workbuddy():
+    refs = PLUGIN_ROOT / "skills" / "mindie-agent" / "references"
+    workspace = (refs / "workspace-setup.md").read_text(encoding="utf-8")
+    notice = (refs / "user-notice.md").read_text(encoding="utf-8")
+    auth = (refs / "github-authentication.md").read_text(encoding="utf-8")
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    english = (REPO_ROOT / "README.en.md").read_text(encoding="utf-8")
+    assert "WorkBuddy" in workspace and "codebuddy" in workspace
+    assert "install_workbuddy_plugin" in workspace
+    assert "codex app" not in workspace.lower()
+    assert "wb.json" in notice and "mindie-consent.json" in notice
+    assert "gh auth login" in auth
+    for text in (readme, english):
+        assert "init --install-wb" in text
+        assert "user-notice.md" in text
+        assert "github-authentication.md" in text
+        assert "workspace-setup.md" in text
+        assert "mindie-agent/mindie-agent" in text
+
+
 def test_wb_knowledge_cli_explore_budget_and_rsi_wrappers(tmp_path: Path):
     import experiment_ledger
     import knowledge_cli

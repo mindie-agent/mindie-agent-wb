@@ -10,8 +10,8 @@ registers the plugin & connector in `~/.workbuddy/plugins/` (`install-wb`).
 - Passive Default: `ensure_default_profile` and `configure_community` write
   MindIE-owned JSON configs atomically via `os.replace()` and never activate a
   session lease or start the background knowledge loop.
-- `install_workbuddy_plugin` only updates WorkBuddy plugin registries when
-  explicitly requested (or during `init --install-wb`).
+- `install_workbuddy_plugin` runs only for `install-wb` and `init --install-wb`.
+- `--help`, `-h`, and `--dry-run` do not bootstrap a runtime or write config.
 
 [Timeouts & Locks]
 - Local config validation/writes are immediate; first-time `uv sync` runtime
@@ -26,7 +26,6 @@ registers the plugin & connector in `~/.workbuddy/plugins/` (`install-wb`).
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import importlib.util
 import json
 import os
@@ -44,6 +43,7 @@ from bounded import run as bounded_run
 from wb_native_compat import ensure_wb_native_support
 
 ensure_wb_native_support()
+from wb_install import install_workbuddy_plugin
 from paths import (
     admission_path,
     apply_enterprise_transport_env,
@@ -57,7 +57,6 @@ from paths import (
     read_json,
     repo_root,
     state_dir,
-    workbuddy_config_dir,
 )
 
 BOOTSTRAP_TIMEOUT = 540.0
@@ -69,6 +68,14 @@ _BASELINE_ITEMS = (
     ".codebuddy-plugin",
     "plugins",
 )
+
+
+def _copy_lf_clean(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    raw = src.read_bytes()
+    if src.suffix in _TEXT_SUFFIXES and b"\r\n" in raw:
+        raw = raw.replace(b"\r\n", b"\n")
+    dst.write_bytes(raw)
 
 
 def _discover_checkout_source() -> Path | None:
@@ -88,14 +95,6 @@ def _discover_checkout_source() -> Path | None:
         if (resolved / "pyproject.toml").is_file() and (resolved / "product-contract.json").is_file():
             return resolved
     return None
-
-
-def _copy_lf_clean(src: Path, dst: Path) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    raw = src.read_bytes()
-    if src.suffix in _TEXT_SUFFIXES and b"\r\n" in raw:
-        raw = raw.replace(b"\r\n", b"\n")
-    dst.write_bytes(raw)
 
 
 def stage_source_baseline(source_dir: str | Path | None = None, dest_dir: str | Path | None = None) -> Path:
@@ -425,197 +424,6 @@ def ensure_default_profile(
     return adapter_payload
 
 
-def _copy_plugin_tree(src_plugin: Path, dst_plugin: Path) -> None:
-    if dst_plugin.exists():
-        shutil.rmtree(dst_plugin)
-    dst_plugin.mkdir(parents=True, exist_ok=True)
-    for sub in src_plugin.rglob("*"):
-        if any(part in {"__pycache__", ".pytest_cache", ".git", ".venv"} for part in sub.parts):
-            continue
-        if sub.is_file() and sub.suffix != ".pyc":
-            _copy_lf_clean(sub, dst_plugin / sub.relative_to(src_plugin))
-
-
-def _discover_workbuddy_accounts(wb_root: Path) -> list[tuple[str, str]]:
-    """Discover `(uid, enterprise_id)` pairs for signed-in or persisted WorkBuddy accounts."""
-    accounts: dict[str, str] = {}
-    acct_state_dir = wb_root / "plugin-account-state"
-    if acct_state_dir.is_dir():
-        for state_file in acct_state_dir.glob("*.json"):
-            try:
-                ident = str(read_json(state_file).get("identityKey") or "")
-                uid = state_file.stem.strip()
-                if uid:
-                    accounts[uid] = ident.split("|", 1)[1] if "|" in ident else ""
-            except ValueError:
-                pass
-
-    snap_file = wb_root / "storage" / "skeleton" / "account-snapshot.json"
-    if snap_file.is_file():
-        try:
-            primary = read_json(snap_file).get("primary")
-            if isinstance(primary, dict) and str(primary.get("uid") or "").strip():
-                uid = str(primary["uid"]).strip()
-                ent = str(primary.get("enterpriseId") or "").strip()
-                if ent or uid not in accounts:
-                    accounts[uid] = ent
-        except ValueError:
-            pass
-
-    conn_dir = wb_root / "connectors"
-    if conn_dir.is_dir():
-        for cs_file in conn_dir.glob("*/connector-states.json"):
-            try:
-                parts = str(read_json(cs_file).get("accountIdentityKey") or "").split("|")
-                uid = (parts[0] if parts and parts[0] else cs_file.parent.name).strip()
-                ent = parts[1].strip() if len(parts) > 1 else ""
-                if uid and (ent or uid not in accounts):
-                    accounts[uid] = ent or accounts.get(uid, "")
-            except ValueError:
-                pass
-
-    settings_file = wb_root / "settings.json"
-    if settings_file.is_file():
-        try:
-            claw = read_json(settings_file).get("claw")
-            if isinstance(claw, dict) and str(claw.get("legacyOwnerUid") or "").strip():
-                accounts.setdefault(str(claw["legacyOwnerUid"]).strip(), "")
-        except ValueError:
-            pass
-
-    return list(accounts.items())
-
-
-def _installed_record(install_path: Path, version: str, now_iso: str) -> list[dict]:
-    return [
-        {
-            "scope": "user",
-            "installPath": str(install_path.resolve()),
-            "version": version,
-            "installedAt": now_iso,
-            "lastUpdated": now_iso,
-        }
-    ]
-
-
-def install_workbuddy_plugin(
-    *,
-    wb_dir: str | Path | None = None,
-    config: str | Path | None = None,
-) -> dict:
-    """Install, register, and enable `mindie-agent` in `~/.workbuddy` (Plugin, MCP servers, Skills & Connector)."""
-    wb_root = Path(wb_dir).expanduser().resolve() if wb_dir is not None else workbuddy_config_dir(config)
-    plugins_dir = wb_root / "plugins"
-    plugins_dir.mkdir(parents=True, exist_ok=True)
-
-    src_plugin = plugin_root()
-    src_repo = src_plugin.parent.parent
-    manifest = read_json(src_plugin / "plugin.json")
-    version = str(manifest.get("version") or "0.1.0")
-    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-
-    # 1. Stage into ~/.workbuddy/plugins/cache/mindie-agent-marketplace/mindie-agent/<version>
-    marketplace_name = "mindie-agent-marketplace"
-    plugin_id = f"mindie-agent@{marketplace_name}"
-    cache_dest = plugins_dir / "cache" / marketplace_name / "mindie-agent" / version
-    _copy_plugin_tree(src_plugin, cache_dest)
-
-    # 2. Register marketplace in known_marketplaces.json
-    known_mp_file = plugins_dir / "known_marketplaces.json"
-    known_mp = read_json(known_mp_file) if known_mp_file.is_file() else {}
-    known_mp[marketplace_name] = {
-        "manifestName": marketplace_name,
-        "type": "directory",
-        "source": {"source": "directory", "path": str(src_repo.resolve())},
-        "installLocation": str(src_repo.resolve()),
-        "description": "MindIE Agent official plugin and connector marketplace for Tencent WorkBuddy",
-        "lastUpdated": now_iso,
-        "autoUpdate": False,
-    }
-    atomic_write_json(known_mp_file, known_mp)
-
-    # 3. Register installed plugin in installed_plugins.json
-    installed_file = plugins_dir / "installed_plugins.json"
-    installed_data = read_json(installed_file) if installed_file.is_file() else {"version": 2, "plugins": {}}
-    plugins_map = installed_data.setdefault("plugins", {})
-    plugins_map[plugin_id] = _installed_record(cache_dest, version, now_iso)
-
-    # 4. Also register in workbuddy-connector-plugins-official marketplace & cache if present
-    connector_mp_name = "workbuddy-connector-plugins-official"
-    connector_plugin_id = f"mindie-agent@{connector_mp_name}"
-    connector_mp_root = plugins_dir / "marketplaces" / connector_mp_name
-    connector_dest = None
-    connector_cache_dest = None
-    if connector_mp_root.is_dir():
-        connector_dest = connector_mp_root / "connectors" / "mindie-agent"
-        _copy_plugin_tree(src_plugin, connector_dest)
-        connector_cache_dest = plugins_dir / "cache" / connector_mp_name / "mindie-agent" / version
-        _copy_plugin_tree(src_plugin, connector_cache_dest)
-        plugins_map[connector_plugin_id] = _installed_record(connector_cache_dest, version, now_iso)
-        mp_json_file = connector_mp_root / ".codebuddy-plugin" / "marketplace.json"
-        if mp_json_file.is_file():
-            try:
-                raw_mp = json.loads(mp_json_file.read_text(encoding="utf-8"))
-                if isinstance(raw_mp, dict) and isinstance(raw_mp.get("plugins"), list):
-                    entries = [p for p in raw_mp["plugins"] if isinstance(p, dict) and p.get("name") != "mindie-agent"]
-                    entries.insert(
-                        0,
-                        {
-                            "name": "mindie-agent",
-                            "description": manifest["description"],
-                            "source": "./connectors/mindie-agent",
-                            "version": version,
-                        },
-                    )
-                    raw_mp["plugins"] = entries
-                    atomic_write_json(mp_json_file, raw_mp)
-            except (OSError, ValueError):
-                pass
-
-    atomic_write_json(installed_file, installed_data)
-
-    # 5. Enable plugin in ~/.workbuddy/settings.json -> enabledPlugins
-    settings_file = wb_root / "settings.json"
-    settings_data = read_json(settings_file) if settings_file.is_file() else {}
-    enabled_plugins = settings_data.get("enabledPlugins")
-    if not isinstance(enabled_plugins, dict):
-        enabled_plugins = {}
-        settings_data["enabledPlugins"] = enabled_plugins
-    enabled_plugins[plugin_id] = True
-    if connector_mp_root.is_dir():
-        enabled_plugins[connector_plugin_id] = False
-    atomic_write_json(settings_file, settings_data)
-
-    # 6. Activate & enable connector in ~/.workbuddy/plugin-account-state/<uid>.json
-    activated_accounts: list[str] = []
-    if connector_mp_root.is_dir():
-        acct_state_dir = wb_root / "plugin-account-state"
-        acct_state_dir.mkdir(parents=True, exist_ok=True)
-        for uid, ent_id in _discover_workbuddy_accounts(wb_root):
-            acct_file = acct_state_dir / f"{uid}.json"
-            acct_data = read_json(acct_file) if acct_file.is_file() else {}
-            acct_plugins = acct_data.get("plugins") if isinstance(acct_data.get("plugins"), dict) else {}
-            prev = acct_plugins.get(connector_plugin_id)
-            act_at = prev.get("activatedAt") if isinstance(prev, dict) and isinstance(prev.get("activatedAt"), str) else now_iso
-            acct_plugins[connector_plugin_id] = {"enabled": True, "activatedAt": act_at, "updatedAt": now_iso}
-            atomic_write_json(acct_file, {"version": 1, "identityKey": f"{uid}|{ent_id}", "plugins": acct_plugins})
-            activated_accounts.append(uid)
-
-    return {
-        "status": "installed",
-        "plugin_id": plugin_id,
-        "enabled": True,
-        "version": version,
-        "cache_install_path": str(cache_dest.resolve()),
-        "connector_path": str(connector_dest.resolve()) if connector_dest else None,
-        "connector_cache_path": str(connector_cache_dest.resolve()) if connector_cache_dest else None,
-        "known_marketplaces": str(known_mp_file),
-        "installed_plugins": str(installed_file),
-        "settings_file": str(settings_file),
-        "activated_accounts": activated_accounts,
-    }
-
-
 def configure_community(
     *,
     config: str | Path | None = None,
@@ -702,44 +510,88 @@ def _reexec_stdio(stream):
         return subprocess.DEVNULL
 
 
+def _emit_json(payload: dict) -> int:
+    sys.stdout.buffer.write((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+    sys.stdout.buffer.flush()
+    return 0
+
+
+def _dry_plan(cmd: str | None, install: bool) -> dict:
+    """Read-only description of the command. Does not stage a runtime or write config."""
+    return {
+        "schema": "mindie-wb-setup/1",
+        "status": "dry-run",
+        "bootstrap": False,
+        "cmd": cmd,
+        "uv": shutil.which("uv"),
+        "gh": shutil.which("gh"),
+        "install_workbuddy_plugin": install,
+        "registers_native_plugin": install,
+        "registers_connector_if_marketplace_present": install,
+        "profile_only": cmd in (None, "init") and not install,
+    }
+
+
+def _add_dry_run(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the plan only; do not bootstrap a runtime or write config",
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
-    apply_enterprise_transport_env()
-    raw_argv = list(sys.argv[1:] if argv is None else argv)
-    if not raw_argv:
+    incoming = list(sys.argv[1:] if argv is None else argv)
+    dry_run = "--dry-run" in incoming
+    raw_argv = [arg for arg in incoming if arg != "--dry-run"]
+    wants_help = any(arg in {"-h", "--help"} for arg in raw_argv)
+    if not incoming:
         raw_argv = ["init"]
-    if (
-        importlib.util.find_spec("mindie_knowledge") is None
-        and os.environ.get("_MINDIE_WB_SETUP_BOOTSTRAPPED") != "1"
-    ):
-        staged_src = stage_source_baseline()
-        target_py = ensure_runtime_python(staged_src)
-        env = apply_enterprise_transport_env(dict(os.environ))
-        env["_MINDIE_WB_SETUP_BOOTSTRAPPED"] = "1"
-        env["MINDIE_WB_SOURCE_ROOT"] = str(staged_src)
-        run_kwargs: dict = {"env": env}
-        if os.name == "nt":
-            run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            run_kwargs["stdin"] = _reexec_stdio(sys.stdin)
-            run_kwargs["stdout"] = _reexec_stdio(sys.stdout)
-            run_kwargs["stderr"] = _reexec_stdio(sys.stderr)
-        proc = subprocess.run([target_py, "-I", str(Path(__file__).resolve()), *raw_argv], **run_kwargs)
-        return int(proc.returncode)
+    if not dry_run and not wants_help:
+        apply_enterprise_transport_env()
+        if (
+            importlib.util.find_spec("mindie_knowledge") is None
+            and os.environ.get("_MINDIE_WB_SETUP_BOOTSTRAPPED") != "1"
+        ):
+            staged_src = stage_source_baseline()
+            target_py = ensure_runtime_python(staged_src)
+            env = apply_enterprise_transport_env(dict(os.environ))
+            env["_MINDIE_WB_SETUP_BOOTSTRAPPED"] = "1"
+            env["MINDIE_WB_SOURCE_ROOT"] = str(staged_src)
+            run_kwargs: dict = {"env": env}
+            if os.name == "nt":
+                run_kwargs.update(
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    stdin=_reexec_stdio(sys.stdin),
+                    stdout=_reexec_stdio(sys.stdout),
+                    stderr=_reexec_stdio(sys.stderr),
+                )
+            proc = subprocess.run([target_py, "-I", str(Path(__file__).resolve()), *raw_argv], **run_kwargs)
+            return int(proc.returncode)
 
     parser = argparse.ArgumentParser(description="Configure MindIE Agent for Tencent WorkBuddy")
+    _add_dry_run(parser)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     init_p = sub.add_parser("init")
+    _add_dry_run(init_p)
     init_p.add_argument("--config", default=None)
     init_p.add_argument("--workspace-root", default=None)
     init_p.add_argument("--domain", default="vllm-ascend")
-    init_p.add_argument("--install-wb", action="store_true", help="Also register plugin in ~/.workbuddy/plugins")
+    init_p.add_argument(
+        "--install-wb",
+        action="store_true",
+        help="Call install_workbuddy_plugin to mount the Connector and native plugin",
+    )
     init_p.add_argument("--wb-dir", default=None, help="Explicit ~/.workbuddy directory")
 
-    inst_p = sub.add_parser("install-wb")
+    inst_p = sub.add_parser("install-wb", help="Mount the Connector and native plugin via install_workbuddy_plugin")
+    _add_dry_run(inst_p)
     inst_p.add_argument("--config", default=None)
     inst_p.add_argument("--wb-dir", default=None)
 
     share_p = sub.add_parser("sharing")
+    _add_dry_run(share_p)
     share_p.add_argument("--config", default=None)
     share_p.add_argument("--enable", action="store_true")
     share_p.add_argument("--disable", action="store_true")
@@ -750,7 +602,12 @@ def main(argv: list[str] | None = None) -> int:
     share_p.add_argument("--visibility", default="public")
     share_p.add_argument("--repository", default="mindie-agent/knowledge-vllm-ascend")
 
+    if dry_run and not raw_argv:
+        return _emit_json(_dry_plan(None, False))
     args = parser.parse_args(raw_argv)
+    if dry_run:
+        install = args.cmd == "install-wb" or (args.cmd == "init" and bool(args.install_wb))
+        return _emit_json(_dry_plan(args.cmd, install))
     if args.cmd == "init":
         result = ensure_default_profile(
             config=args.config,
@@ -774,9 +631,7 @@ def main(argv: list[str] | None = None) -> int:
             visibility=args.visibility,
             repository=args.repository,
         )
-    sys.stdout.buffer.write((json.dumps(result, ensure_ascii=False) + "\n").encode("utf-8"))
-    sys.stdout.buffer.flush()
-    return 0
+    return _emit_json(result)
 
 
 if __name__ == "__main__":
