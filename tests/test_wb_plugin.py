@@ -188,7 +188,7 @@ def test_install_workbuddy_plugin_registers_marketplace_cache_and_connector(tmp_
     assert (connector_path / "plugin.json").is_file()
     assert (connector_path / "ai.workbuddy" / "assets" / "icon.svg").is_file()
     mp_entries = json.loads((official_mp / "marketplace.json").read_text(encoding="utf-8"))["plugins"]
-    assert any(p.get("name") == "mindie-agent" and p.get("version") == "0.1.4" for p in mp_entries)
+    assert any(p.get("name") == "mindie-agent" and p.get("version") == "0.1.5" for p in mp_entries)
 
 
 @pytest.mark.skipif(not WORKBUDDY_CLI.is_file(), reason="WorkBuddy CLI not installed on this machine")
@@ -421,22 +421,102 @@ def test_onboarding_references_target_workbuddy():
     english = (REPO_ROOT / "README.en.md").read_text(encoding="utf-8")
     assert "WorkBuddy" in workspace and "codebuddy" in workspace
     assert "install_workbuddy_plugin" in workspace
+    assert "AskUserQuestion" in workspace
     assert "codex app" not in workspace.lower()
     assert "wb.json" in notice and "mindie-consent.json" in notice
     assert "gh auth login" in auth
-    assert "gh auth setup-git --hostname github.com" in auth
-    assert "credential.https://github.com.helper" in auth
+    assert "gh auth setup-git" not in readme and "gh auth setup-git" not in english
+    assert "credential.https://github.com.helper=!gh auth git-credential" in auth
     assert "GCM_INTERACTIVE=never" in auth
-    safe_unset = "git config --system --unset-all credential.helper helper-selector"
-    assert safe_unset in auth
-    assert auth.count("git config --system --unset-all credential.helper") == 1
+    assert "GIT_CONFIG_COUNT" in auth
     assert "manager" in auth
     for text in (readme, english):
         assert "init --install-wb" in text
+        assert "AskUserQuestion" in text
+        assert "sharing --status" in text
         assert "user-notice.md" in text
         assert "github-authentication.md" in text
         assert "workspace-setup.md" in text
         assert "mindie-agent/mindie-agent" in text
+
+
+def test_git_config_count_composition_and_sharing_contract_safety(tmp_path: Path, monkeypatch, capsys):
+    import paths
+    import setup
+
+    pre_env = {
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "http.proxy",
+        "GIT_CONFIG_VALUE_0": "http://proxy.internal:8080",
+        "GIT_CONFIG_KEY_1": "core.longpaths",
+        "GIT_CONFIG_VALUE_1": "false",
+    }
+    composed = paths.apply_enterprise_transport_env(pre_env)
+    assert composed["GIT_CONFIG_COUNT"] == "4"
+    assert composed["GIT_CONFIG_KEY_0"] == "http.proxy"
+    assert composed["GIT_CONFIG_VALUE_0"] == "http://proxy.internal:8080"
+    assert composed["GIT_CONFIG_KEY_1"] == "core.longpaths"
+    assert composed["GIT_CONFIG_VALUE_1"] == "false"
+    assert composed["GIT_CONFIG_KEY_2"] == "core.autocrlf"
+    assert composed["GIT_CONFIG_VALUE_2"] == "false"
+    assert composed["GIT_CONFIG_KEY_3"] == "credential.https://github.com.provider"
+    assert composed["GIT_CONFIG_VALUE_3"] == "github"
+
+    cfg = Path(os.environ["MINDIE_AGENT_CONFIG"])
+    consent_file = cfg.parent / "mindie-consent.json"
+
+    for bad_argv in (["sharing"], ["sharing", "--enable", "--disable"], ["sharing", "--status", "--enable"]):
+        with pytest.raises(SystemExit) as exc:
+            setup.main(bad_argv)
+        assert exc.value.code == 2
+        capsys.readouterr()
+    assert not consent_file.exists()
+
+    assert setup.main(["sharing", "--status"]) == 0
+    status_out = json.loads(capsys.readouterr().out)
+    assert status_out["schema"] == "mindie-sharing-status/1"
+    assert status_out["harness"] == "workbuddy"
+    assert status_out["consent_choice"] is None
+    assert status_out["sharing_enabled"] is False
+    assert status_out["needs_onboarding_prompt"] is True
+    assert not consent_file.exists()
+
+    with pytest.raises(ValueError, match="invalid repository format"):
+        setup.configure_community(enabled=True, repository="invalid-repo", project_root=tmp_path)
+    assert not consent_file.exists()
+
+    with pytest.raises(ValueError, match="visibility='public'"):
+        setup.configure_community(enabled=True, visibility="private", project_root=tmp_path)
+    assert not consent_file.exists()
+
+
+def test_temp_checkout_paths_rebind_to_wb_source(tmp_path: Path, monkeypatch):
+    import shutil
+    import setup
+
+    temp_checkout = tmp_path / "mindie-agent-wb-install"
+    temp_plugin = temp_checkout / "plugins" / "mindie-agent"
+    shutil.copytree(PLUGIN_ROOT, temp_plugin)
+    for name in ("pyproject.toml", "product-contract.json", "harness-compatibility.json"):
+        shutil.copy2(REPO_ROOT / name, temp_checkout / name)
+
+    monkeypatch.setenv("WB_PLUGIN_ROOT", str(temp_plugin))
+    monkeypatch.setattr(setup, "__file__", str(temp_plugin / "scripts" / "setup.py"))
+
+    cfg_file = tmp_path / "config" / "wb.json"
+    wb_dir = tmp_path / "workbuddy"
+    prof = setup.ensure_default_profile(config=cfg_file, workspace_root=tmp_path)
+    inst = setup.install_workbuddy_plugin(wb_dir=wb_dir, config=cfg_file, source_root=prof.get("source_root"))
+    eng_data = json.loads((tmp_path / "config" / "wb.engine.json").read_text(encoding="utf-8"))
+    known_mp = json.loads(Path(inst["known_marketplaces"]).read_text(encoding="utf-8"))
+
+    assert "mindie-agent-wb-install" not in prof["runtime_scripts"]
+    assert "mindie-agent-wb-install" not in prof["source_root"]
+    assert "mindie-agent-wb-install" not in eng_data["transcript_adapter"]
+    assert all("mindie-agent-wb-install" not in part for part in eng_data["summary_command"])
+    mp_entry = known_mp["mindie-agent-marketplace"]
+    assert "mindie-agent-wb-install" not in mp_entry["installLocation"]
+    assert "mindie-agent-wb-install" not in mp_entry["source"]["path"]
 
 
 def test_wb_knowledge_cli_explore_budget_and_rsi_wrappers(tmp_path: Path):

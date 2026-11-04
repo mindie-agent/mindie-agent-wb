@@ -6,12 +6,21 @@ when contribution is disabled. Reuse the user's creation, initialization and
 registration decisions; ordinary tasks and updates do not repeat onboarding.
 
 1. Recommend [mindie-agent/vllm-ascend-workspace](https://github.com/mindie-agent/vllm-ascend-workspace.git).
-   Offer creating and initializing it, reusing an existing directory, or keeping
-   the current directory. Obtain the destination when needed and explain that
-   the selected workspace will also be added to the current client's native
-   project/workspace entry. An installation choice includes this registration;
-   do not ask again whether to register it. If the user keeps the current
-   directory without scaffold setup, finish the offer and retain that directory.
+   During Step 5 of installation (or when `setup.py sharing --status` reports
+   `needs_onboarding_prompt: true`), call WorkBuddy's native
+   **`AskUserQuestion`** tool (`multiSelect: false`, first option prefixed with
+   `(Recommended)`) to ask the 3 onboarding questions together:
+   - Community Knowledge Sharing & Automated Fault Reporting (`header: "社区共享"`):
+     `(Recommended) Enable Community Sharing & Fault Reporting` vs `Keep Local-Only Mode`
+   - GitHub Star ⭐ for `mindie-agent/mindie-agent` (`header: "GitHub Star"`):
+     `(Recommended) Star mindie-agent/mindie-agent on GitHub` vs `Skip for now`
+   - Local Development Workspace `vllm-ascend-workspace` (`header: "开发工作区"`):
+     `(Recommended) Initialize vllm-ascend-workspace` vs `Keep current directory as workspace` vs `Use an existing workspace directory`
+   Obtain the destination when needed and explain that the selected workspace
+   will also be added to the current client's native project/workspace entry.
+   An installation choice includes this registration; do not ask again whether
+   to register it. If the user keeps the current directory without scaffold
+   setup, finish the offer and retain that directory as `WORKSPACE_ROOT`.
 2. Before downloads or fork setup, follow [GitHub Sign-In](github-authentication.md).
    Reuse authentication already verified during plugin installation. Otherwise
    offer browser login or token creation/input, preferring tokens on enterprise
@@ -31,14 +40,18 @@ registration decisions; ordinary tasks and updates do not repeat onboarding.
 5. If initialization was not already decided, offer it now for a new or reused
    scaffold that needs it. On approval, read its `AGENTS.md`, `README.md` and
    `.agents/scripts/README.md`. Use the checked-out initializer:
-   `python3 .agents/scripts/repo_init.py --no-input` reuses saved `workspace.json`
+   `uv run --no-project --python 3.13 python .agents/scripts/repo_init.py --no-input` reuses saved `workspace.json`
    fork selections. For first setup using the verified account's existing forks,
-   use `python3 .agents/scripts/repo_init.py --github-user <account> --no-input`.
+   use `uv run --no-project --python 3.13 python .agents/scripts/repo_init.py --github-user <account> --no-input`.
    The initializer configures forks; it does not create GitHub forks. Resolve
    missing forks within the requested setup and keep existing personal remotes.
    Do not replace this flow with manual submodule commands or copying the sample
    configuration over the user's file.
-6. Report the path, native registration/open status and initialization status
+6. After resolving `WORKSPACE_ROOT`, persist the user's sharing choice via
+   `uv run --no-project --python 3.13 python "<plugin_root>/scripts/setup.py" sharing --enable --project-root "$WORKSPACE_ROOT"`
+   (or `--disable`), and if the user chose to Star `mindie-agent/mindie-agent`, run
+   `gh api --hostname github.com --silent -X PUT /user/starred/mindie-agent/mindie-agent`.
+   Report the path, native registration/open status and initialization status
    separately. Resume a failed initialization in the same workspace. Contribution
    settings retain their approved scope; workspace installation does not enable
    sharing or expand that scope.
@@ -56,8 +69,8 @@ WorkBuddy desktop (`WorkBuddy.app`) and its bundled CodeBuddy Agent CLI
   `/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy`.
 
 Plugin and Connector mounting is a separate step. Only
-`python3 plugins/mindie-agent/scripts/setup.py init --install-wb` and
-`python3 plugins/mindie-agent/scripts/setup.py install-wb` call
+`uv run --no-project --python 3.13 python plugins/mindie-agent/scripts/setup.py init --install-wb` and
+`uv run --no-project --python 3.13 python plugins/mindie-agent/scripts/setup.py install-wb` call
 `install_workbuddy_plugin`. Bare `init` writes the MindIE profile (`wb.json`)
 and does not mount either surface. Confirm both mounts with the success
 signals in the repository README before reporting installation complete.

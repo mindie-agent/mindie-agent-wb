@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.4-0F766E.svg" alt="Release v0.1.4"></a>
+  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.5-0F766E.svg" alt="Release v0.1.5"></a>
 </p>
 
 ## 1. 架构概览：连接器（Connector）与插件（Plugin）双重兼容
@@ -45,41 +45,57 @@ WorkBuddy 桌面端界面中的 **Connector（连接器）** 底层即基于 **A
 
 如果你是收到用户安装请求的 AI Agent，请直接按顺序执行以下步骤。**不要把单独的 `init` 汇报成 WorkBuddy 已安装。**
 
-1. **检查 `git`、`uv` 与 `gh`（硬性指标）**
+1. **检查 `git`、`uv` 与 `gh`（硬性指标，零全局 Git 污染）**
 
-   插件拉取、发行版校验、`knowledge-vllm-ascend` 同步、经验闭环 PR 与组件故障上报都依赖已登录的 `gh`：
+   插件拉取、发行版校验、`knowledge-vllm-ascend` 同步、经验闭环 PR 与组件故障上报都依赖已登录的 `gh`。长路径、LF 与 GitHub 凭据提供方仅通过进程级 `GIT_CONFIG_COUNT` 注入，不修改宿主机全局或系统级 Git 配置文件（`~/.gitconfig`）：
 
    ```sh
    git --version && uv --version && gh --version
+   mindie_append_git_config() {
+     key="$1"; value="$2"; count="${GIT_CONFIG_COUNT:-0}"; i=0
+     while [ "$i" -lt "$count" ]; do
+       eval "cur=\${GIT_CONFIG_KEY_$i-}"
+       [ "$cur" = "$key" ] && return 0
+       i=$((i + 1))
+     done
+     eval "export GIT_CONFIG_KEY_$count=\"\$key\""
+     eval "export GIT_CONFIG_VALUE_$count=\"\$value\""
+     GIT_CONFIG_COUNT=$((count + 1)); export GIT_CONFIG_COUNT
+   }
+   mindie_append_git_config core.longpaths true
+   mindie_append_git_config core.autocrlf false
+   mindie_append_git_config "credential.https://github.com.provider" github
+   mindie_append_git_config "credential.https://github.com.helper" "!gh auth git-credential"
+   unset -f mindie_append_git_config
+   export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never UV_SYSTEM_CERTS=true UV_NATIVE_TLS=true
    GH_USER=$(gh api --hostname github.com user --jq .login) && echo "GitHub channel verified for account: $GH_USER"
-   gh auth setup-git --hostname github.com
    ```
 
    未安装 `gh` 时先协助安装（macOS：`brew install gh`；Windows：`winget install --id GitHub.cli`；Ubuntu / WSL：`sudo apt update && sudo apt install -y gh`）。需要登录时按 [GitHub 登录引导](plugins/mindie-agent/skills/mindie-agent/references/github-authentication.md)：普通网络用浏览器，企业网络或浏览器授权受阻时优先 Token。网络、代理或证书失败先修传输，不把它们当成 Token 失效。
 
 2. **保留用户授权**
 
-   安装过程只注册 WorkBuddy 插件与连接器。社区贡献保持关闭，直到用户在 `/mindie-agent` 里明确选择 `contribute`。安装过程不创建 Fork，也不点 Star。Star 只出现在第 5 步的成功汇报之后，且只在用户明确同意后执行。
+   安装过程只注册 WorkBuddy 插件与连接器。社区贡献保持关闭，直到用户在第 5 步或 `/mindie-agent` 里明确选择 `contribute`。安装过程不自动创建 Fork，也不静默点 Star。
 
 3. **安装必须调用 `install_workbuddy_plugin`**
 
    会挂载 Connector 与原生插件的入口只有这两条：
 
    ```sh
-   python3 plugins/mindie-agent/scripts/setup.py init --install-wb --workspace-root "$PWD"
-   python3 plugins/mindie-agent/scripts/setup.py install-wb
+   UV_SYSTEM_CERTS=true UV_NATIVE_TLS=true uv run --no-project --python 3.13 python plugins/mindie-agent/scripts/setup.py init --install-wb --workspace-root "$PWD"
+   UV_SYSTEM_CERTS=true UV_NATIVE_TLS=true uv run --no-project --python 3.13 python plugins/mindie-agent/scripts/setup.py install-wb
    ```
 
-   `init --install-wb` 会先写入 MindIE Profile（`wb.json`），再调用 `install_workbuddy_plugin`。单独的 `install-wb` 同样会先准备 Profile，再调用 `install_workbuddy_plugin`。
+   `init --install-wb` 会先刷新持久化源码基线（`wb-source`）、写入 MindIE Profile（`wb.json`），再调用 `install_workbuddy_plugin`。单独的 `install-wb` 同样会先准备 Profile，再调用 `install_workbuddy_plugin`。
 
-   单独的 `init`（不带 `--install-wb`）只写 Profile 和运行时，**不**注册 `~/.workbuddy` 里的插件或连接器。主仓安装说明里的 WorkBuddy 分支目前发布的就是这条不带 `--install-wb` 的命令；在本仓库按那条命令执行后，回执里没有 `workbuddy_install`，不能向用户报告 Connector 或 Plugin 已挂载。
+   单独的 `init`（不带 `--install-wb`）只写 Profile 和运行时，**不**注册 `~/.workbuddy` 里的插件或连接器。
 
    从锁定标签安装时：
 
    ```sh
    MINDIE_TMP="${TMPDIR:-/tmp}/mindie-agent-wb-install"
    rm -rf "$MINDIE_TMP"
-   git -c core.longpaths=true -c core.autocrlf=false clone --depth 1 --branch v0.1.4 https://github.com/mindie-agent/mindie-agent-wb.git "$MINDIE_TMP"
+   git -c core.longpaths=true -c core.autocrlf=false clone --depth 1 --branch v0.1.5 https://github.com/mindie-agent/mindie-agent-wb.git "$MINDIE_TMP"
    UV_SYSTEM_CERTS=true UV_NATIVE_TLS=true uv run --no-project --python 3.13 python \
      "$MINDIE_TMP/plugins/mindie-agent/scripts/setup.py" init --install-wb --workspace-root "$PWD"
    ```
@@ -87,8 +103,8 @@ WorkBuddy 桌面端界面中的 **Connector（连接器）** 底层即基于 **A
    `--help`、`-h` 和 `--dry-run`（含唯一缩写，例如 `--dry`）只打印说明或计划，不拉取运行时，也不写配置：
 
    ```sh
-   python3 plugins/mindie-agent/scripts/setup.py --help
-   python3 plugins/mindie-agent/scripts/setup.py init --install-wb --dry-run
+   uv run --no-project --python 3.13 python plugins/mindie-agent/scripts/setup.py --help
+   uv run --no-project --python 3.13 python plugins/mindie-agent/scripts/setup.py init --install-wb --dry-run
    ```
 
 4. **核对成功信号：原生插件与 Connector 都已挂载**
@@ -105,18 +121,90 @@ WorkBuddy 桌面端界面中的 **Connector（连接器）** 底层即基于 **A
        plugin validate ./plugins/mindie-agent
      ```
 
-   向用户汇报已验证的 GitHub 账号（`$GH_USER`）、插件版本，以及上面的插件/连接器挂载结果。然后简要说明 [用户须知](plugins/mindie-agent/skills/mindie-agent/references/user-notice.md)，并按 [工作区配置指南](plugins/mindie-agent/skills/mindie-agent/references/workspace-setup.md) 引导工作区：新建并初始化 [vllm-ascend-workspace](https://github.com/mindie-agent/vllm-ascend-workspace)、复用已有目录，或继续当前目录。原生入口是 WorkBuddy 桌面端与 `codebuddy` / `cbc`，按该指南登记绝对路径。贡献开关保持用户已有选择；安装本身不开启贡献。
+   向用户汇报已验证的 GitHub 账号（`$GH_USER`）、插件版本，以及上面的插件/连接器挂载结果。
 
-5. **成功之后再询问是否点亮 Star**
+5. **调用 WorkBuddy 原生 `AskUserQuestion` 工具弹出交互式单选框完成首次授权与工作区配置**
 
-   汇报完插件、连接器、工作区路径和初始化状态后，询问用户：
+   - 先用纯标准库命令读取当前共享状态：
 
-   > 如果觉得 MindIE Agent 对你有帮助，需要我顺手帮你在 GitHub 上给主仓 `mindie-agent/mindie-agent` 点个 Star 吗？这能帮助项目更好地成长！⭐
+     ```sh
+     WB_SOURCE="${MINDIE_DATA_HOME:-$HOME/.local/share/mindie-agent}/wb-source"
+     uv run --no-project --python 3.13 python "$WB_SOURCE/plugins/mindie-agent/scripts/setup.py" sharing --status
+     ```
 
-   仅当用户明确同意（例如「好」「可以」「yes」）时才执行下面的命令并核对结果。用户拒绝、未回复或安装失败时，不执行：
+   - 简要说明 [用户须知](plugins/mindie-agent/skills/mindie-agent/references/user-notice.md) 的三项核心契约（本地 Gitleaks 双层脱敏、仅向公开知识库提 PR 与向主仓提脱敏故障 Issue、单一 `mindie-consent.json` 权威开关可随时关闭），然后**立即调用 WorkBuddy 原生 `AskUserQuestion` 工具**（若运行在无 `AskUserQuestion` 的子命令模式，则输出编号单选卡片并等待用户回复）弹出以下 3 个问题：
 
-   ```sh
-   gh api --hostname github.com --silent -X PUT /user/starred/mindie-agent/mindie-agent && gh api --hostname github.com --silent /user/starred/mindie-agent/mindie-agent
-   ```
+     ```json
+     {
+       "questions": [
+         {
+           "header": "社区共享",
+           "question": "是否开启 MindIE Agent 社区知识共享与自动故障上报（本地 Gitleaks 脱敏后向开源社区提交经验 PR 与故障 Issue）？",
+           "multiSelect": false,
+           "options": [
+             {
+               "label": "(Recommended) 开启社区共享与故障上报",
+               "description": "启用经验蒸馏与本地 Gitleaks 脱敏后向 mindie-agent/knowledge-vllm-ascend 提交 PR 及故障上报"
+             },
+             {
+               "label": "暂不开启，仅本地使用",
+               "description": "仅使用本地确定性工具与只读公共知识，不启动后台采集或上报"
+             }
+           ]
+         },
+         {
+           "header": "GitHub Star",
+           "question": "是否为 MindIE Agent 开源主仓 (mindie-agent/mindie-agent) 点亮 GitHub Star ⭐？",
+           "multiSelect": false,
+           "options": [
+             {
+               "label": "(Recommended) 点亮 Star ⭐",
+               "description": "使用当前已登录的 gh 账号为 mindie-agent/mindie-agent 点亮 Star"
+             },
+             {
+               "label": "暂不点亮",
+               "description": "跳过 Star 操作"
+             }
+           ]
+         },
+         {
+           "header": "开发工作区",
+           "question": "如何配置本地开发工作区 vllm-ascend-workspace？",
+           "multiSelect": false,
+           "options": [
+             {
+               "label": "(Recommended) 新建并初始化 vllm-ascend-workspace",
+               "description": "按 workspace-setup.md 创建聚合工作区并配置 vllm / vllm-ascend 仓库"
+             },
+             {
+               "label": "保持当前目录不变",
+               "description": "直接将当前目录作为开发工作区"
+             },
+             {
+               "label": "复用本机已有工作区目录",
+               "description": "指定本机已存在的开发工作区路径"
+             }
+           ]
+         }
+       ]
+     }
+     ```
+
+   - **严格按序执行用户回答（用户拒绝、未回复或安装失败时绝不擅自执行）**：
+     1. **先确定/初始化工作区（得到 `WORKSPACE_ROOT`）**：按 [工作区配置指南](plugins/mindie-agent/skills/mindie-agent/references/workspace-setup.md) 处理问题 3，原生入口是 WorkBuddy 桌面端与 `codebuddy` / `cbc`，登记绝对路径 `WORKSPACE_ROOT`。
+     2. **再落盘社区共享与故障上报开关**：
+        - 若问题 1 选择开启：
+          ```sh
+          uv run --no-project --python 3.13 python "$WB_SOURCE/plugins/mindie-agent/scripts/setup.py" sharing --enable --project-root "$WORKSPACE_ROOT"
+          ```
+        - 若问题 1 选择仅本地使用：
+          ```sh
+          uv run --no-project --python 3.13 python "$WB_SOURCE/plugins/mindie-agent/scripts/setup.py" sharing --disable
+          ```
+     3. **最后按需点亮 Star ⭐**：仅当用户在问题 2 明确同意时执行以下命令并核对结果：
+
+        ```sh
+        gh api --hostname github.com --silent -X PUT /user/starred/mindie-agent/mindie-agent && gh api --hostname github.com --silent /user/starred/mindie-agent/mindie-agent
+        ```
 
 </details>

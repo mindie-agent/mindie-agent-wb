@@ -25,8 +25,9 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import shutil
+import tempfile
 
-from paths import atomic_write_json, plugin_root, read_json, workbuddy_config_dir
+from paths import atomic_write_json, data_home, plugin_root, read_json, workbuddy_config_dir
 
 _TEXT_SUFFIXES = {".py", ".json", ".md", ".toml", ".svg", ".txt", ".yml", ".yaml"}
 
@@ -112,10 +113,21 @@ def _installed_record(install_path: Path, version: str, now_iso: str) -> list[di
     ]
 
 
+def _is_temp_checkout_path(path: Path) -> bool:
+    raw = str(path).replace("\\", "/")
+    if "mindie-agent-wb-install" in raw or raw.startswith(("/tmp/", "/private/tmp/")):
+        return True
+    try:
+        return Path(tempfile.gettempdir()).resolve() in path.resolve().parents
+    except OSError:
+        return False
+
+
 def install_workbuddy_plugin(
     *,
     wb_dir: str | Path | None = None,
     config: str | Path | None = None,
+    source_root: str | Path | None = None,
 ) -> dict:
     """Install, register, and enable `mindie-agent` in `~/.workbuddy` (Plugin, MCP servers, Skills & Connector)."""
     wb_root = Path(wb_dir).expanduser().resolve() if wb_dir is not None else workbuddy_config_dir(config)
@@ -123,7 +135,16 @@ def install_workbuddy_plugin(
     plugins_dir.mkdir(parents=True, exist_ok=True)
 
     src_plugin = plugin_root()
-    src_repo = src_plugin.parent.parent
+    if source_root is not None:
+        src_repo = Path(source_root).expanduser().resolve()
+    else:
+        src_repo = src_plugin.parent.parent
+        if _is_temp_checkout_path(src_repo):
+            staged = (data_home() / "wb-source").resolve()
+            if (staged / "pyproject.toml").is_file():
+                src_repo = staged
+    if not (src_plugin / "plugin.json").is_file() and (src_repo / "plugins" / "mindie-agent" / "plugin.json").is_file():
+        src_plugin = src_repo / "plugins" / "mindie-agent"
     manifest = read_json(src_plugin / "plugin.json")
     version = str(manifest.get("version") or "0.1.0")
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"

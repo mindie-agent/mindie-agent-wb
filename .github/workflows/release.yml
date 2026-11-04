@@ -12,7 +12,7 @@ jobs:
     uses: mindie-agent/mindie-bench/.github/workflows/publish-release.yml@484b80621aaf9293c559786d0ef2174c79a0dbb4
     with:
       benchmark-ref: 484b80621aaf9293c559786d0ef2174c79a0dbb4
-      release-notes-path: docs/releases/mindie-agent-wb-0.1.4.md
+      release-notes-path: docs/releases/mindie-agent-wb-0.1.5.md
       version-files: |
         pyproject.toml
         plugins/mindie-agent/plugin.json

@@ -72,16 +72,29 @@ def apply_enterprise_transport_env(target_env: dict[str, str] | None = None) -> 
     env.setdefault("GCM_INTERACTIVE", "never")
     env.setdefault("PYTHONUTF8", "1")
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    git_pairs = (
+        ("core.longpaths", "true"),
+        ("core.autocrlf", "false"),
+        ("credential.https://github.com.provider", "github"),
+    )
     if "GIT_CONFIG_COUNT" not in env:
-        git_pairs = (
-            ("core.longpaths", "true"),
-            ("core.autocrlf", "false"),
-            ("credential.https://github.com.provider", "github"),
-        )
         env["GIT_CONFIG_COUNT"] = str(len(git_pairs))
         for idx, (k, v) in enumerate(git_pairs):
             env[f"GIT_CONFIG_KEY_{idx}"] = k
             env[f"GIT_CONFIG_VALUE_{idx}"] = v
+    else:
+        try:
+            count = max(0, int(env.get("GIT_CONFIG_COUNT", "0")))
+        except ValueError:
+            count = 0
+        existing_keys = {env.get(f"GIT_CONFIG_KEY_{i}") for i in range(count)}
+        for k, v in git_pairs:
+            if k not in existing_keys:
+                env[f"GIT_CONFIG_KEY_{count}"] = k
+                env[f"GIT_CONFIG_VALUE_{count}"] = v
+                existing_keys.add(k)
+                count += 1
+        env["GIT_CONFIG_COUNT"] = str(count)
     return dict(env)
 
 

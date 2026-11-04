@@ -26,4 +26,11 @@ Use this skill after the user invokes `/mindie-agent` or `$mindie-agent` in the 
 
 - **Detailed tool schemas (`knowledge_*`, `remote_*`, `debugger`, `npu_top`), dual-layer ledger (`PROGRESS.md` + `experiment-ledger.jsonl`), and NPU timing / profiler discipline**: read [references/domain-skills.md](references/domain-skills.md).
 - **Session lifecycle, `/mindie-agent deactivate`, and `Stop` capture rules**: read [references/activation-lifecycle.md](references/activation-lifecycle.md).
-- **Install, workspace onboarding, contribution notice, and GitHub sign-in**: read [references/workspace-setup.md](references/workspace-setup.md), [references/user-notice.md](references/user-notice.md), and [references/github-authentication.md](references/github-authentication.md). Mount the WorkBuddy Connector and native plugin with `setup.py init --install-wb` or `setup.py install-wb` (`install_workbuddy_plugin`). Ask before starring `mindie-agent/mindie-agent`; star only after an explicit yes.
+- **Install, workspace onboarding (`AskUserQuestion` popup), contribution notice, and GitHub sign-in**:
+  - Read [references/workspace-setup.md](references/workspace-setup.md), [references/user-notice.md](references/user-notice.md), and [references/github-authentication.md](references/github-authentication.md).
+  - Mount the WorkBuddy Connector and native plugin with `uv run --no-project --python 3.13 python "<plugin_root>/scripts/setup.py" init --install-wb` or `install-wb` (`install_workbuddy_plugin`).
+  - Right after installation or when `uv run --no-project --python 3.13 python "<plugin_root>/scripts/setup.py" sharing --status` reports `needs_onboarding_prompt: true`, call WorkBuddy's native **`AskUserQuestion`** tool (`multiSelect: false`, first option prefixed with `(Recommended)`) to ask:
+    1. Community Knowledge Sharing & Automated Fault Reporting (`header: "社区共享"`)
+    2. GitHub Star ⭐ for `mindie-agent/mindie-agent` (`header: "GitHub Star"`)
+    3. Local Development Workspace `vllm-ascend-workspace` (`header: "开发工作区"`)
+  - Resolve `WORKSPACE_ROOT` first, then run `uv run --no-project --python 3.13 python "<plugin_root>/scripts/setup.py" sharing --enable --project-root "$WORKSPACE_ROOT"` (or `--disable`), and star `mindie-agent/mindie-agent` only after an explicit yes.
