@@ -138,36 +138,6 @@ WorkBuddy 桌面端界面中的 **Connector（连接器）** 底层即基于 **A
      {
        "questions": [
          {
-           "header": "社区共享",
-           "question": "是否开启 MindIE Agent 社区知识共享与自动故障上报（本地 Gitleaks 脱敏后向开源社区提交经验 PR 与故障 Issue）？",
-           "multiSelect": false,
-           "options": [
-             {
-               "label": "(Recommended) 开启社区共享与故障上报",
-               "description": "启用经验蒸馏与本地 Gitleaks 脱敏后向 mindie-agent/knowledge-vllm-ascend 提交 PR 及故障上报"
-             },
-             {
-               "label": "暂不开启，仅本地使用",
-               "description": "仅使用本地确定性工具与只读公共知识，不启动后台采集或上报"
-             }
-           ]
-         },
-         {
-           "header": "GitHub Star",
-           "question": "是否为 MindIE Agent 开源主仓 (mindie-agent/mindie-agent) 点亮 GitHub Star ⭐？",
-           "multiSelect": false,
-           "options": [
-             {
-               "label": "(Recommended) 点亮 Star ⭐",
-               "description": "使用当前已登录的 gh 账号为 mindie-agent/mindie-agent 点亮 Star"
-             },
-             {
-               "label": "暂不点亮",
-               "description": "跳过 Star 操作"
-             }
-           ]
-         },
-         {
            "header": "开发工作区",
            "question": "如何配置本地开发工作区 vllm-ascend-workspace？",
            "multiSelect": false,
@@ -185,23 +155,53 @@ WorkBuddy 桌面端界面中的 **Connector（连接器）** 底层即基于 **A
                "description": "指定本机已存在的开发工作区路径"
              }
            ]
+         },
+         {
+           "header": "社区共享",
+           "question": "是否开启 MindIE Agent 社区知识共享与自动故障上报（本地 Gitleaks 脱敏后向开源社区提交经验 PR 与故障 Issue）？",
+           "multiSelect": false,
+           "options": [
+             {
+               "label": "(Recommended) 开启社区共享与故障上报",
+               "description": "启用经验蒸馏与本地 Gitleaks 脱敏后向 mindie-agent/knowledge-vllm-ascend 提交 PR 及故障上报"
+             },
+             {
+               "label": "暂不开启，仅本地使用",
+               "description": "仅使用本地确定性工具与只读公共知识，不启动后台采集或上报"
+             }
+           ]
+         },
+         {
+           "header": "GitHub Star",
+           "question": "顺手给 MindIE Agent 点个 GitHub Star 吗？ ⭐",
+           "multiSelect": false,
+           "options": [
+             {
+               "label": "(Recommended) 好，点个 Star ⭐",
+               "description": "在 GitHub 上 star mindie-agent/mindie-agent 支持一下项目"
+             },
+             {
+               "label": "先不用",
+               "description": "直接开始使用"
+             }
+           ]
          }
        ]
      }
      ```
 
    - **严格按序执行用户回答（用户拒绝、未回复或安装失败时绝不擅自执行）**：
-     1. **先确定/初始化工作区（得到 `WORKSPACE_ROOT`）**：按 [工作区配置指南](plugins/mindie-agent/skills/mindie-agent/references/workspace-setup.md) 处理问题 3，原生入口是 WorkBuddy 桌面端与 `codebuddy` / `cbc`，登记绝对路径 `WORKSPACE_ROOT`。
+     1. **先确定/初始化工作区（得到 `WORKSPACE_ROOT`）**：按 [工作区配置指南](plugins/mindie-agent/skills/mindie-agent/references/workspace-setup.md) 处理问题 1，原生入口是 WorkBuddy 桌面端与 `codebuddy` / `cbc`，登记绝对路径 `WORKSPACE_ROOT`。
      2. **再落盘社区共享与故障上报开关**：
-        - 若问题 1 选择开启：
+        - 若问题 2 选择开启：
           ```sh
           uv run --no-project --python 3.13 python "$WB_SOURCE/plugins/mindie-agent/scripts/setup.py" sharing --enable --project-root "$WORKSPACE_ROOT"
           ```
-        - 若问题 1 选择仅本地使用：
+        - 若问题 2 选择仅本地使用：
           ```sh
           uv run --no-project --python 3.13 python "$WB_SOURCE/plugins/mindie-agent/scripts/setup.py" sharing --disable
           ```
-     3. **最后按需点亮 Star ⭐**：仅当用户在问题 2 明确同意时执行以下命令并核对结果：
+     3. **最后按用户意愿点上 Star ⭐**：仅当用户在问题 3 明确选择点个 Star 时执行以下命令并核对结果：
 
         ```sh
         gh api --hostname github.com --silent -X PUT /user/starred/mindie-agent/mindie-agent && gh api --hostname github.com --silent /user/starred/mindie-agent/mindie-agent
