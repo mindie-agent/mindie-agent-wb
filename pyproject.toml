@@ -12,16 +12,15 @@ dependencies = [
     "mindie-knowledge>=0.13.0",
     "remote-dev>=0.10.0",
     "mindie-diagnostics>=0.5.0",
-]
-
-[project.optional-dependencies]
-components = [
     "mindie-coordinator>=0.6.0",
     "mindie-profiler>=0.5.0",
     "mindie-sim>=0.7.0",
     "mindie-debugger>=0.1.0",
     "npu-top>=0.3.0",
 ]
+
+[project.optional-dependencies]
+components = []
 test = [
     "pytest>=8,<10",
     "jsonschema>=4",
@@ -30,13 +29,18 @@ test = [
 [tool.uv.sources]
 mindie-knowledge = { git = "https://github.com/mindie-agent/knowledge", rev = "1840bd4e238e718676768489058917818d18cd3c" }
 remote-dev = { git = "https://github.com/mindie-agent/remote-dev", rev = "131b24533479e9cefc572144adccdcb345f70846" }
-mindie-diagnostics = { git = "https://github.com/mindie-agent/diagnostics", rev = "9b331956b00737dd6d8c956da3416316f2de1ddf" }
+mindie-diagnostics = { git = "https://github.com/mindie-agent/diagnostics", rev = "f338788cecc56f7aff1dccab1d53426c9e28fe7f" }
+mindie-coordinator = { git = "https://github.com/mindie-agent/coordinator", rev = "14d7cec7247bdcbea9b9878db4770e3a05a6ea41" }
+mindie-profiler = { git = "https://github.com/mindie-agent/profiler", rev = "79d97e75bff7351b0472b93c03b072c1cf47f5e7" }
+mindie-sim = { git = "https://github.com/mindie-agent/sim", rev = "dbadff04b60937a0722b0a227cdad01beed083cd" }
+mindie-debugger = { git = "https://github.com/mindie-agent/debugger", rev = "e9406b2b178335190d5cb59dff4d6985894497ba" }
+npu-top = { git = "https://github.com/mindie-agent/npu-top", rev = "8f0cb3ec66393812e90e118cd73704070c6027a2" }
 
 [tool.uv]
 override-dependencies = [
     "mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@1840bd4e238e718676768489058917818d18cd3c",
     "remote-dev @ git+https://github.com/mindie-agent/remote-dev@131b24533479e9cefc572144adccdcb345f70846",
-    "mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@9b331956b00737dd6d8c956da3416316f2de1ddf",
+    "mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@f338788cecc56f7aff1dccab1d53426c9e28fe7f",
     "mindie-coordinator @ git+https://github.com/mindie-agent/coordinator@14d7cec7247bdcbea9b9878db4770e3a05a6ea41",
     "mindie-profiler @ git+https://github.com/mindie-agent/profiler@79d97e75bff7351b0472b93c03b072c1cf47f5e7",
     "mindie-sim @ git+https://github.com/mindie-agent/sim@dbadff04b60937a0722b0a227cdad01beed083cd",

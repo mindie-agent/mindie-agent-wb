@@ -13,7 +13,7 @@
   "components": {
     "mindie-knowledge": "0.13.12",
     "remote-dev": "0.11.5",
-    "mindie-diagnostics": "0.5.6",
+    "mindie-diagnostics": "0.5.7",
     "mindie-coordinator": "0.7.4",
     "mindie-profiler": "0.5.6",
     "mindie-sim": "0.9.3",
