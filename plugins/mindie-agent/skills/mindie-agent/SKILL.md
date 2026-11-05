@@ -29,8 +29,8 @@ Use this skill after the user invokes `/mindie-agent` or `$mindie-agent` in the 
 - **Install, workspace onboarding (`AskUserQuestion` popup), contribution notice, and GitHub sign-in**:
   - Read [references/workspace-setup.md](references/workspace-setup.md), [references/user-notice.md](references/user-notice.md), and [references/github-authentication.md](references/github-authentication.md).
   - Mount the WorkBuddy Connector and native plugin with `uv run --no-project --python 3.13 python "<plugin_root>/scripts/setup.py" init --install-wb` or `install-wb` (`install_workbuddy_plugin`).
-  - Right after installation or when `uv run --no-project --python 3.13 python "<plugin_root>/scripts/setup.py" sharing --status` reports `needs_onboarding_prompt: true`, call WorkBuddy's native **`AskUserQuestion`** tool (`multiSelect: false`, first option prefixed with `(Recommended)`) to ask:
-    1. Community Knowledge Sharing & Automated Fault Reporting (`header: "社区共享"`)
-    2. GitHub Star ⭐ for `mindie-agent/mindie-agent` (`header: "GitHub Star"`)
-    3. Local Development Workspace `vllm-ascend-workspace` (`header: "开发工作区"`)
+  - Right after installation or when `uv run --no-project --python 3.13 python "<plugin_root>/scripts/setup.py" sharing --status` reports `needs_onboarding_prompt: true`, call WorkBuddy's native **`AskUserQuestion`** tool in the user's language (`multiSelect: false`, first option prefixed with `(Recommended)`) to ask:
+    1. Local Development Workspace `vllm-ascend-workspace` (`header: "开发工作区"` / `"Workspace"`)
+    2. Community Knowledge Sharing & Automated Fault Reporting (`header: "社区共享"` / `"Sharing"`)
+    3. `顺手给 MindIE Agent 点个 GitHub Star 吗？ ⭐` / `Would you like to give mindie-agent a Star on GitHub ⭐?` (`header: "GitHub Star"`, `(Recommended) 好，点个 Star ⭐` / `(Recommended) Sure, star it ⭐` vs `先不用` / `Maybe later`)
   - Resolve `WORKSPACE_ROOT` first, then run `uv run --no-project --python 3.13 python "<plugin_root>/scripts/setup.py" sharing --enable --project-root "$WORKSPACE_ROOT"` (or `--disable`), and star `mindie-agent/mindie-agent` only after an explicit yes.

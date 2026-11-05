@@ -57,7 +57,7 @@ Report the install as mounted only when both surfaces are actually registered:
 
 `codebuddy plugin validate` checks the manifest. It does not replace the mount receipt. The native workspace entry is WorkBuddy and `codebuddy` / `cbc`, as described in the workspace setup guide.
 
-### Step 5: Native `AskUserQuestion` Onboarding Popup (Sharing, GitHub Star ⭐ & Workspace)
+### Step 5: Native `AskUserQuestion` Onboarding Popup (Workspace, Sharing & GitHub Star ⭐)
 
 Right after verifying the mount receipt, check the sharing status using the stdlib-only check:
 
@@ -68,9 +68,9 @@ uv run --no-project --python 3.13 python "$WB_SOURCE/plugins/mindie-agent/script
 
 Briefly present the [contribution notice](plugins/mindie-agent/skills/mindie-agent/references/user-notice.md) and **call WorkBuddy's native `AskUserQuestion` tool** (`multiSelect: false`, first option prefixed with `(Recommended)`; fall back to a numbered list card only if `AskUserQuestion` is unavailable) with these 3 questions:
 
-1. **Community Knowledge Sharing & Automated Fault Reporting** (`header: "社区共享"`): `(Recommended) Enable Community Sharing & Fault Reporting` vs `Keep Local-Only Mode`.
-2. **GitHub Star ⭐ for `mindie-agent/mindie-agent`** (`header: "GitHub Star"`): `(Recommended) Star mindie-agent/mindie-agent on GitHub` vs `Skip for now`.
-3. **Local Development Workspace `vllm-ascend-workspace`** (`header: "开发工作区"`): `(Recommended) Initialize vllm-ascend-workspace` vs `Keep current directory as workspace` vs `Use an existing workspace directory`.
+1. **Local Development Workspace `vllm-ascend-workspace`** (`header: "Workspace"`): `(Recommended) Initialize vllm-ascend-workspace` vs `Keep current directory as workspace` vs `Use an existing workspace directory`.
+2. **Community Knowledge Sharing & Automated Fault Reporting** (`header: "Sharing"`): `(Recommended) Enable Community Sharing & Fault Reporting` vs `Keep Local-Only Mode`.
+3. **Would you like to give mindie-agent a Star on GitHub ⭐?** (`header: "GitHub Star"`): `(Recommended) Sure, star it ⭐` (`Star mindie-agent/mindie-agent on GitHub to support the project`) vs `Maybe later` (`Continue without starring`).
 
 Apply the user's choices in strict order:
 1. Resolve/initialize the workspace first (`WORKSPACE_ROOT`) following [workspace-setup.md](plugins/mindie-agent/skills/mindie-agent/references/workspace-setup.md).
