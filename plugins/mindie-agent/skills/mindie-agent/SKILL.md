@@ -5,6 +5,8 @@ description: Manually enable MindIE L1-L4 graded knowledge, domain skills, feedb
 
 # MindIE Agent (Tencent WorkBuddy Unified Entry)
 
+**Keep the user's task moving.** MindIE knowledge, setup, onboarding, diagnostics and local ledgers support the task. If one is unavailable, report that specific failure and continue independent work or use equivalent authorized host-native tools. Defer optional setup and sharing questions when they would interrupt the task. Retain existing job IDs and confirmed results. Reconcile an uncertain remote write before repeating that operation; do not bypass identity, permissions or actual device/port ownership. Coordinator-managed work keeps its leases; an existing verified host reservation may support equivalent native work. If ownership cannot be established, pause only that device action.
+
 Use this skill after the user invokes `/mindie-agent` or `$mindie-agent` in the current WorkBuddy conversation.
 
 1. **Manual Session Activation**:

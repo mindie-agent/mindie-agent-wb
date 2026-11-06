@@ -242,7 +242,7 @@ def test_receipt_honesty_preserves_succeeded_remote_result_on_local_sqlite_error
     monkeypatch.setattr(
         rd_tools,
         "call_tool",
-        lambda name, args, profile="canonical": {"ok": True, "endpoints": [{"alias": "a3-node"}]},
+        lambda name, args, profile="canonical": {"text": "fixture", "result": {"outcome": "success", "status": "ok"}},
     )
 
     class BrokenFinishReceipts(mcp_server.RemoteReceipts):
@@ -256,7 +256,7 @@ def test_receipt_honesty_preserves_succeeded_remote_result_on_local_sqlite_error
         receipts=BrokenFinishReceipts(),
     )
     assert res["isError"] is False
-    assert res["structuredContent"]["ok"] is True
+    assert res["structuredContent"]["result"]["outcome"] == "success"
     assert res["structuredContent"]["receipt_unconfirmed"] is True
     assert "receipt_warning" in res["structuredContent"]
 
@@ -269,7 +269,7 @@ def test_remote_surface_claims_original_arguments_before_clamping_yield_time_ms(
 
     def _fake_call_tool(name: str, args: dict, profile: str = "canonical") -> dict:
         seen_args.append(dict(args))
-        return {"ok": True, "yield_time_ms": args.get("yield_time_ms")}
+        return {"text": "fixture", "result": {"outcome": "success", "yield_time_ms": args.get("yield_time_ms")}}
 
     monkeypatch.setattr(rd_tools, "call_tool", _fake_call_tool)
 

@@ -401,6 +401,15 @@ def _execute_npu_top_observation(name: str, args: dict) -> dict:
     return resp.get("result") or dict(content=[dict(type="text", text="{}")], structuredContent={}, isError=False)
 
 
+def _admission_failure(exc):
+    return dict(isError=True, structuredContent=dict(
+        code="admission_unavailable", execution="not_started", automatic_retry=False,
+        error_type=type(exc).__name__), content=[dict(type="text", text=
+        "This MindIE call did not start because local admission is unavailable. "
+        "Continue independent task steps or use equivalent authorized host-native tools; "
+        "preserve task identity and resource ownership. Do not repeat this call unchanged.")])
+
+
 def call_remote_surface(
     name: str,
     arguments: dict | None = None,
@@ -413,26 +422,34 @@ def call_remote_surface(
     profile = _resolve_remote_profile()
     os.environ["REMOTE_DEV_HARNESS_PROFILE"] = profile
     raw_args = dict(arguments or {})
-    claim = _resolve_claim("remote", name, raw_args, meta=meta, config=config)
+    try:
+        claim = _resolve_claim("remote", name, raw_args, meta=meta, config=config)
+    except Exception as exc:
+        return _admission_failure(exc)
     exec_args = dict(raw_args)
     if "yield_time_ms" in exec_args and type(exec_args["yield_time_ms"]) is int:
         exec_args["yield_time_ms"] = min(exec_args["yield_time_ms"], MAX_YIELD_TIME_MS)
     session, bind_id = claim["session"], claim.get("bind_id")
     receipt_store = receipts or RemoteReceipts(remote_receipts_path(config))
     call_id = str(uuid.uuid4())
-    receipt_store.begin(call_id, session, name, exec_args)
-
-    root = state_dir(config) / "remote" / session
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        root = state_dir(config) / "remote" / session
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        receipt_store.begin(call_id, session, name, exec_args)
+    except Exception as exc:
+        return _admission_failure(exc)
     os.environ["REMOTE_DEV_SESSION_ID"] = session
     os.environ["REMOTE_DEV_STATE_DIR"] = str(root)
     succeeded = False
+    outcome = "failed"
     try:
         from remote_dev.mcp.server import tool_text
         from remote_dev.mcp.tools import call_tool
+        from remote_dev.mcp.outcome import operation_outcome
 
         raw = call_tool(name, exec_args, profile=profile)
-        is_error = bool(isinstance(raw, dict) and raw.get("ok") is False)
+        outcome = operation_outcome(name, raw)
+        is_error = outcome != "succeeded"
         succeeded = not is_error
         blocks = [dict(type="text", text=tool_text(raw))]
         native_blocks = raw.get("content") if isinstance(raw, dict) else None
@@ -448,7 +465,9 @@ def call_remote_surface(
     except Exception as exc:
         from remote_dev.core.errors import error_details, safe_auth_error_details
 
-        auth = safe_auth_error_details(error_details(exc))
+        details = error_details(exc)
+        outcome = "unknown" if details.get("submission_state") == "uncertain" else "failed"
+        auth = safe_auth_error_details(details)
         result = dict(
             content=[dict(type="text", text=auth["hint"] if auth else f"{type(exc).__name__}: {exc}")],
             structuredContent=(dict(error_details=auth) if auth else
@@ -457,7 +476,7 @@ def call_remote_surface(
         )
 
     try:
-        receipt_store.finish(call_id, "succeeded" if succeeded else "failed")
+        receipt_store.finish(call_id, outcome)
     except (OSError, sqlite3.Error) as exc:
         if succeeded:
             result = _attach_accounting_warning(result, "receipt_warning", exc)
@@ -483,7 +502,10 @@ def call_tools_surface(
         action = args.pop("action")
         code = args.pop("code", None)
         args = {"argv": [action, str(code)] if code is not None else [action]}
-    claim = _resolve_claim("tools", name, args, meta=meta, config=config)
+    try:
+        claim = _resolve_claim("tools", name, args, meta=meta, config=config)
+    except Exception as exc:
+        return _admission_failure(exc)
     session, bind_id = claim["session"], claim.get("bind_id")
     succeeded = False
     try:
@@ -605,14 +627,13 @@ def call_knowledge_surface(
     config=None,
 ) -> dict:
     args = dict(arguments or {})
-    claim = _resolve_claim("knowledge", name, args, meta=meta, config=config)
-    session, bind_id = claim["session"], claim.get("bind_id")
-    workspace = (
-        args.get("project_root")
-        or claim.get("workspace_root")
-        or session_context(session, config=config).get("workspace_root")
-        or os.getcwd()
-    )
+    try:
+        claim = _resolve_claim("knowledge", name, args, meta=meta, config=config)
+        session, bind_id = claim["session"], claim.get("bind_id")
+        workspace = (args.get("project_root") or claim.get("workspace_root")
+                     or session_context(session, config=config).get("workspace_root") or os.getcwd())
+    except Exception as exc:
+        return _admission_failure(exc)
     succeeded = False
     try:
         if name == "mindie_entry":
