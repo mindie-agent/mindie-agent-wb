@@ -446,9 +446,13 @@ def call_remote_surface(
             isError=is_error,
         )
     except Exception as exc:
+        from remote_dev.core.errors import error_details, safe_auth_error_details
+
+        auth = safe_auth_error_details(error_details(exc))
         result = dict(
-            content=[dict(type="text", text=f"{type(exc).__name__}: {exc}")],
-            structuredContent=dict(error=str(exc), error_type=type(exc).__name__),
+            content=[dict(type="text", text=auth["hint"] if auth else f"{type(exc).__name__}: {exc}")],
+            structuredContent=(dict(error_details=auth) if auth else
+                               dict(error=str(exc), error_type=type(exc).__name__)),
             isError=True,
         )
 
