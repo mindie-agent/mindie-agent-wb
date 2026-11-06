@@ -1,0 +1,36 @@
+name: Installed runtime upgrade
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  upgrade:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.longpaths
+      GIT_CONFIG_VALUE_0: 'true'
+      GH_TOKEN: ${{ github.token }}
+      MINDIE_TEST_RUNTIME_UPGRADE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      - name: Install the candidate runtime
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/mindie-uv
+        run: uv sync --locked --no-editable --no-install-project --extra test --python 3.12
+      - name: Verify old generation, failed preparation, and activation
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}/mindie-uv
+        run: uv run --no-sync python -m pytest -q tests/test_runtime_upgrade.py
+

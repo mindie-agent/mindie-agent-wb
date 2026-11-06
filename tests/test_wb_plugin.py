@@ -70,6 +70,14 @@ def test_plugin_manifests_and_connector_mcp_layout():
         assert set(srv).issubset(allowed_connector_keys)
 
 
+def test_explicit_existing_runtime_discovery_preserves_the_interpreter(monkeypatch):
+    import sys
+    import setup
+
+    monkeypatch.setenv("MINDIE_WB_PYTHON", sys.executable)
+    assert Path(setup._discover_existing_mindie_python()) == setup._norm_python_path(sys.executable)
+
+
 def test_product_and_harness_compatibility_contracts_and_module_invariants(monkeypatch: pytest.MonkeyPatch):
     product = json.loads((REPO_ROOT / "product-contract.json").read_text(encoding="utf-8"))
     assert product["schema"] == "mindie-product-contract/1"
@@ -403,7 +411,7 @@ def test_missing_runtime_reexec_is_skipped_for_help(monkeypatch, capsys):
 
     monkeypatch.setattr(setup.subprocess, "run", _run)
     assert setup.main(["init", "--install-wb"]) == 7
-    assert seen["calls"] == ["stage", "python"]
+    assert seen["calls"] == ["python", "stage"]
     assert seen["argv"][-2:] == ["init", "--install-wb"]
 
     seen.clear()
