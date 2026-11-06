@@ -14,7 +14,7 @@
 
 - `profiler` (`mindie-profiler`): `inventory`, `analyze`, `correlate`, `compare`, `sql`, `camodel`, `kernels`.
 - `sim` (`mindie-sim`): Roofline, operator, graph, topology/PD Pareto, and serving performance simulations.
-- `coordinator` (`mindie-coordinator`): Acquire NPU and port leases before running device workloads (`vram_free_mb >= Expected VRAM`; respect Ascend A3 910C dual-Die `Phy-ID 0..15` package boundaries).
+- `coordinator` (`mindie-coordinator`): Acquire NPU and port leases for coordinator-managed device workloads (`vram_free_mb >= Expected VRAM`; respect Ascend A3 910C dual-Die `Phy-ID 0..15` package boundaries).
 - `debugger` (`mindie-debugger`): `triage`, `decode-code`, `precision` (`inspect-capsule`, `replay-call`, `check-call`, `compare-traces`, `slim-moe`, `watch`), `aclgraph` (`guard`, `inspect`), and `remote-guide`.
 - `npu_top` & Direct Observation Tools (`npu_status`, `server_status`, `list_mounts`, `find_npu_capacity`, `npu_telemetry_window`, `list_npu_servers`): Observation-only fleet telemetry.
 - `diagnostics_status` & `diagnostics_bundle`: Local diagnostic health and sanitized bundle export.

@@ -8,4 +8,3 @@ build/
 *.egg-info/
 .DS_Store
 .mindie-local/
-uv.lock
