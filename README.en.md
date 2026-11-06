@@ -1,7 +1,7 @@
 # MindIE Agent for Tencent WorkBuddy (`mindie-agent-wb`)
 
 <p>
-  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.6-0F766E.svg" alt="Release v0.1.6"></a>
+  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.7-0F766E.svg" alt="Release v0.1.7"></a>
 </p>
 
 Native plugin and UI Connector adapter for **Tencent WorkBuddy** (and its bundled `@genie/agent-cli` / `codebuddy` runtime), exposing the complete suite of **40 MindIE MCP tools**, lifecycle hooks, and L1–L4 graded knowledge skills.
@@ -34,7 +34,7 @@ From the pinned release:
 ```bash
 MINDIE_TMP="${TMPDIR:-/tmp}/mindie-agent-wb-install"
 rm -rf "$MINDIE_TMP"
-git -c core.longpaths=true -c core.autocrlf=false clone --depth 1 --branch v0.1.6 https://github.com/mindie-agent/mindie-agent-wb.git "$MINDIE_TMP"
+git -c core.longpaths=true -c core.autocrlf=false clone --depth 1 --branch v0.1.7 https://github.com/mindie-agent/mindie-agent-wb.git "$MINDIE_TMP"
 UV_SYSTEM_CERTS=true UV_NATIVE_TLS=true uv run --no-project --python 3.13 python \
   "$MINDIE_TMP/plugins/mindie-agent/scripts/setup.py" init --install-wb --workspace-root "$PWD"
 ```
