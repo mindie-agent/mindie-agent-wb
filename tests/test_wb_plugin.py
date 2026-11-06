@@ -44,6 +44,7 @@ def test_plugin_manifests_and_connector_mcp_layout():
     mp_json = json.loads((REPO_ROOT / ".codebuddy-plugin" / "marketplace.json").read_text(encoding="utf-8"))
     assert mp_json["name"] == "mindie-agent-marketplace"
     assert mp_json["plugins"][0]["name"] == "mindie-agent"
+    assert mp_json["plugins"][0]["version"] == plugin_json["version"]
 
     # 4. Hooks layout (`hooks/hooks.json`)
     hooks_file = PLUGIN_ROOT / "hooks" / "hooks.json"
@@ -188,7 +189,8 @@ def test_install_workbuddy_plugin_registers_marketplace_cache_and_connector(tmp_
     assert (connector_path / "plugin.json").is_file()
     assert (connector_path / "ai.workbuddy" / "assets" / "icon.svg").is_file()
     mp_entries = json.loads((official_mp / "marketplace.json").read_text(encoding="utf-8"))["plugins"]
-    assert any(p.get("name") == "mindie-agent" and p.get("version") == "0.1.5" for p in mp_entries)
+    plugin_version = json.loads((PLUGIN_ROOT / "plugin.json").read_text(encoding="utf-8"))["version"]
+    assert any(p.get("name") == "mindie-agent" and p.get("version") == plugin_version for p in mp_entries)
 
 
 @pytest.mark.skipif(not WORKBUDDY_CLI.is_file(), reason="WorkBuddy CLI not installed on this machine")

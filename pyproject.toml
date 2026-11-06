@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mindie-agent-wb"
-version = "0.1.6"
+version = "0.1.7"
 description = "Tencent WorkBuddy (CodeBuddy Agent CLI) native harness plugin & connector adapter for MindIE Agent"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -52,4 +52,5 @@ override-dependencies = [
 testpaths = ["tests"]
 markers = [
     "live_npu: standing A2/A3 Ascend NPU non-destructive live integration",
+    "live_host: opt-in Tier 3 host and network acceptance in isolated profiles",
 ]

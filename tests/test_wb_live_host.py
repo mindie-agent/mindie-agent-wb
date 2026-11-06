@@ -9,6 +9,8 @@ import subprocess
 import sys
 import pytest
 
+pytestmark = pytest.mark.live_host
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = REPO_ROOT / "plugins" / "mindie-agent"
