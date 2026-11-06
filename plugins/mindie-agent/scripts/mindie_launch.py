@@ -115,14 +115,42 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("mindie_launch requires a subcommand: hook | mcp | setup | update")
 
     target_py = _preferred_python()
+    target_script = Path(__file__).resolve()
+    if argv[0] in {"hook", "mcp"} and config_path().is_file():
+        # The profile activates interpreter and payload together. A newly
+        # downloaded native entry must keep serving the previous generation
+        # until installation has prepared and activated its replacement.
+        active = read_json(config_path())
+        active_python = active.get("python")
+        active_scripts = active.get("runtime_scripts")
+        validation = active.get("product_validation") or {}
+        expected_version = validation.get("native_version")
+        retained = active.get("source_root")
+        directories = ([Path(retained) / "plugins/mindie-agent/scripts"]
+                       if isinstance(retained, str) else [])
+        if isinstance(active_scripts, str):
+            directories.append(Path(active_scripts))
+        if isinstance(active_python, str) and Path(active_python).is_file():
+            for directory in directories:
+                manifest = directory.parent / "plugin.json"
+                paired_script = directory / "mindie_launch.py"
+                if (manifest.is_file() and paired_script.is_file()
+                        and read_json(manifest).get("version") == expected_version):
+                    target_py = str(_norm_python_path(active_python))
+                    target_script = paired_script.resolve()
+                    break
+            else:
+                raise RuntimeError("active plugin payload does not match its recorded version")
     if (
         target_py is not None
-        and _norm_python_path(sys.executable) != _norm_python_path(target_py)
-        and os.environ.get("_MINDIE_WB_REEXEC") != "1"
+        and (_norm_python_path(sys.executable) != _norm_python_path(target_py)
+             or target_script != Path(__file__).resolve())
     ):
         env = dict(os.environ)
         env["_MINDIE_WB_REEXEC"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
+        if argv[0] in {"hook", "mcp"}:
+            env["WB_PLUGIN_ROOT"] = str(target_script.parent.parent)
         import subprocess
 
         run_kwargs: dict = {"env": env}
@@ -131,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
             run_kwargs["stdin"] = _reexec_stdio(sys.stdin)
             run_kwargs["stdout"] = _reexec_stdio(sys.stdout)
             run_kwargs["stderr"] = _reexec_stdio(sys.stderr)
-        proc = subprocess.run([target_py, "-I", str(Path(__file__).resolve()), *argv], **run_kwargs)
+        proc = subprocess.run([target_py, "-I", str(target_script), *argv], **run_kwargs)
         return int(proc.returncode)
 
     role = argv[0]

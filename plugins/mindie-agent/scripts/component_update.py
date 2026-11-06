@@ -44,6 +44,7 @@ from wb_native_compat import ensure_wb_native_support
 
 ensure_wb_native_support()
 
+from bounded import run as bounded_run
 from paths import (
     apply_enterprise_transport_env,
     atomic_write_json,
@@ -108,6 +109,40 @@ def trigger_background_update_if_due(*, config: str | Path | None = None) -> boo
 def _norm_python_path(py_exe: str | Path) -> str:
     p = Path(py_exe).expanduser()
     return str(p.parent.resolve() / p.name)
+
+
+def compatible_runtime(python: str, *, source=None, config=None, timeout: float = 540.0) -> str:
+    """Prepare a compatible generation without changing the active profile."""
+    deadline = time.monotonic() + float(timeout)
+    imports = ("import mindie_knowledge, remote_dev, mindie_diagnostics, mindie_profiler, "
+               "mindie_sim, mindie_coordinator, mindie_debugger, npu_top; "
+               "from remote_dev.mcp.outcome import operation_outcome")
+
+    def probe(interpreter):
+        budget = min(15.0, deadline - time.monotonic())
+        if budget <= 0:
+            raise TimeoutError("runtime compatibility probe exceeded its budget")
+        return bounded_run([str(interpreter), "-I", "-c", imports], "", timeout=budget).returncode == 0
+
+    if probe(python):
+        return _norm_python_path(python)
+    remaining = deadline - time.monotonic()
+    if remaining <= 20.0:
+        raise TimeoutError("runtime preparation has no remaining build budget")
+    # The configured interpreter may be older than this plugin. Its existing
+    # component builder prepares the new baseline in a separate generation.
+    command = [str(python), "-I", str(Path(__file__).resolve()), "--prepare-only",
+               "--python", str(python), "--source", str(source or repo_root(config)),
+               "--config", str(config_path(config)), "--timeout", str(remaining - 20.0)]
+    result = bounded_run(command, "", timeout=remaining - 15.0,
+                         max_output=256 * 1024, env=apply_enterprise_transport_env(dict(os.environ)))
+    if result.returncode != 0:
+        raise RuntimeError(f"runtime candidate preparation failed: {(result.stderr or result.stdout)[-1000:]}")
+    artifact = json.loads(result.stdout)
+    candidate = artifact.get("python") if isinstance(artifact, dict) else None
+    if not candidate or not probe(candidate):
+        raise RuntimeError("runtime candidate does not provide the plugin APIs")
+    return _norm_python_path(candidate)
 
 
 def prepare(
@@ -276,11 +311,19 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Update MindIE shared runtime components for WorkBuddy")
     parser.add_argument("--config", default=None, help="Path to wb.json")
     parser.add_argument("--source", default=None, help="Path to mindie-agent-wb checkout")
+    parser.add_argument("--prepare-only", action="store_true", help="Build a candidate without activating it")
+    parser.add_argument("--python", default=None, help="Interpreter whose installed components must be preserved")
     parser.add_argument("--check", action="store_true", help="Check and apply component updates")
     parser.add_argument("--force", action="store_true", help="Bypass release catalog cache")
     parser.add_argument("--sync-feeds", action="store_true", help="Also synchronize configured knowledge feeds")
     parser.add_argument("--timeout", type=float, default=540.0, help="Total update timeout in seconds")
     args = parser.parse_args(argv)
+    if args.prepare_only:
+        payload = prepare(source=args.source, python=args.python or sys.executable,
+                          config=args.config, force=args.force, timeout=args.timeout)
+        sys.stdout.buffer.write((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+        sys.stdout.buffer.flush()
+        return 0
     payload = check(
         config=args.config,
         source=args.source,

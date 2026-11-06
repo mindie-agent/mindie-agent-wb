@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -70,7 +71,7 @@ def _copy_lf_clean(src: Path, dst: Path) -> None:
 
 def _discover_checkout_source(workspace_root: str | Path | None = None) -> Path | None:
     """Locate a complete `mindie-agent-wb` checkout for source baseline retention."""
-    candidates: list[Path] = [plugin_root().parent.parent]
+    candidates: list[Path] = [HERE.parent.parent.parent, plugin_root().parent.parent]
     if workspace_root is not None:
         ws = Path(workspace_root).expanduser()
         candidates.extend([ws, ws / "mindie-agent-wb"])
@@ -90,75 +91,69 @@ def _discover_checkout_source(workspace_root: str | Path | None = None) -> Path 
     return None
 
 
+def _payload_digest(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        if path.is_file() and path.suffix != ".pyc" and "__pycache__" not in path.parts:
+            digest.update(path.relative_to(root).as_posix().encode("utf-8") + b"\0")
+            with path.open("rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+    return digest.hexdigest()
+
+
 def stage_source_baseline(
     source_dir: str | Path | None = None,
     dest_dir: str | Path | None = None,
     *,
     workspace_root: str | Path | None = None,
 ) -> Path:
-    """Persist an LF-normalized adapter source baseline under `data_home()/wb-source`."""
-    src = Path(source_dir).resolve() if source_dir is not None else _discover_checkout_source(workspace_root=workspace_root)
-    dst = Path(dest_dir).resolve() if dest_dir is not None else (data_home() / "wb-source").resolve()
+    """Publish an immutable payload generation before its profile can activate."""
+    src = (Path(source_dir).resolve() if source_dir is not None
+           else _discover_checkout_source(workspace_root=workspace_root))
+    base = (data_home() / "wb-source").resolve()
     if src is None:
-        return dst if (dst / "pyproject.toml").is_file() else repo_root()
-    if src == dst:
-        for fpath in dst.rglob("*"):
-            if fpath.is_file() and fpath.suffix in _TEXT_SUFFIXES and ".git" not in fpath.parts:
-                raw = fpath.read_bytes()
-                if b"\r\n" in raw:
-                    fpath.write_bytes(raw.replace(b"\r\n", b"\n"))
-        return dst
-
-    dst.mkdir(mode=0o700, parents=True, exist_ok=True)
-    for item_name in _BASELINE_ITEMS:
-        item_src = src / item_name
-        if not item_src.exists():
-            continue
-        item_dst = dst / item_name
-        if item_src.is_file():
-            _copy_lf_clean(item_src, item_dst)
+        return base if (base / "pyproject.toml").is_file() else repo_root()
+    data_home().mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".source-stage-", dir=data_home()) as folder:
+        staged = Path(folder)
+        for item_name in _BASELINE_ITEMS:
+            item = src / item_name
+            if not item.exists():
+                continue
+            files = [item] if item.is_file() else sorted(item.rglob("*"))
+            for path in files:
+                if (path.is_file() and path.suffix != ".pyc"
+                        and not any(part in {"__pycache__", ".pytest_cache", ".git", ".venv"}
+                                    for part in path.relative_to(src).parts)):
+                    _copy_lf_clean(path, staged / path.relative_to(src))
+        digest = _payload_digest(staged)
+        if dest_dir is not None:
+            dst = Path(dest_dir).resolve()
+            dst.mkdir(parents=True, exist_ok=True)
+            for path in staged.rglob("*"):
+                if path.is_file():
+                    _copy_lf_clean(path, dst / path.relative_to(staged))
+            return dst
         else:
-            for sub in item_src.rglob("*"):
-                if any(part in {"__pycache__", ".pytest_cache", ".git", ".venv"} for part in sub.parts):
-                    continue
-                if sub.is_file() and sub.suffix != ".pyc":
-                    _copy_lf_clean(sub, item_dst / sub.relative_to(item_src))
-    return dst
-
-
-def _attach_local_component_paths(py_exe: Path) -> None:
-    """Ensure `npu_top` and `mindie_debugger` sibling checkouts are importable in `wb-venv`."""
-    try:
-        wb_venv = (data_home() / "wb-venv").resolve()
-        venv_root = py_exe.expanduser().parent.parent.resolve()
-        if venv_root != wb_venv:
-            return
-        probe = bounded_run(
-            [
-                str(py_exe),
-                "-I",
-                "-c",
-                "import site; print(site.getsitepackages()[0])",
-            ],
-            "",
-            timeout=10.0,
-        )
-        if probe.returncode != 0:
-            return
-        site_dir = Path(probe.stdout.strip())
-        if not site_dir.is_dir():
-            return
-        code_root = plugin_root().parent.parent.parent
-        extra_paths: list[str] = []
-        for sibling, pkg in (("debugger", "mindie_debugger"), ("npu-top", "npu_top")):
-            cand = code_root / sibling
-            if (cand / pkg).is_dir():
-                extra_paths.append(str(cand.resolve()))
-        if extra_paths:
-            pth_file = site_dir / "mindie_wb_extra_components.pth"
-            pth_file.write_text("\n".join(extra_paths) + "\n", encoding="utf-8")
-    except Exception:
-        pass
+            version = read_json(staged / "plugins/mindie-agent/plugin.json")["version"]
+            if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+                raise ValueError("plugin payload requires a formal version")
+            dst = base / f"{version}-{digest}"
+        if dst.is_dir():
+            if _payload_digest(dst) != digest:
+                raise ValueError("retained plugin payload content changed")
+            return dst
+        dst.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            os.replace(staged, dst)
+        except TimeoutError:
+            raise
+        except OSError:
+            if not dst.is_dir() or _payload_digest(dst) != digest:
+                raise
+            # Concurrent publication of the same content identity is complete.
+        return dst
 
 
 def _probe_runtime_python(py_exe: str | Path) -> bool:
@@ -214,7 +209,6 @@ def _discover_existing_mindie_python() -> str | None:
     for cand in candidates:
         if _probe_runtime_python(cand):
             resolved = _norm_python_path(cand)
-            _attach_local_component_paths(resolved)
             return str(resolved)
     return None
 
@@ -230,26 +224,29 @@ def ensure_runtime_python(
     source_root: str | Path | None = None,
     python_exe: str | None = None,
     *,
+    config: str | Path | None = None,
     timeout: float = BOOTSTRAP_TIMEOUT,
 ) -> str:
     """Return an interpreter with MindIE runtime components installed, bootstrapping `wb-venv` if needed."""
+    from component_update import compatible_runtime
+
+    def verified(interpreter):
+        return compatible_runtime(str(interpreter), source=source_root or _discover_checkout_source() or repo_root(config),
+                                  config=config, timeout=timeout)
+
     if python_exe:
-        resolved = _norm_python_path(python_exe)
-        _attach_local_component_paths(resolved)
-        return str(resolved)
+        return verified(_norm_python_path(python_exe))
     if sys.prefix != sys.base_prefix and _current_python_has_runtime():
         resolved = _norm_python_path(sys.executable)
-        _attach_local_component_paths(resolved)
-        return str(resolved)
+        return verified(resolved)
 
     existing = _discover_existing_mindie_python()
     if existing is not None:
-        return existing
+        return verified(existing)
 
     if _current_python_has_runtime():
         resolved = _norm_python_path(sys.executable)
-        _attach_local_component_paths(resolved)
-        return str(resolved)
+        return verified(resolved)
 
     venv_dir = data_home() / "wb-venv"
     venv_py = venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
@@ -280,21 +277,20 @@ def ensure_runtime_python(
         detail = (proc.stderr or proc.stdout or "").strip()[-1000:]
         raise RuntimeError(f"uv sync failed while bootstrapping wb-venv (exit {proc.returncode}): {detail}")
     resolved = _norm_python_path(venv_py)
-    _attach_local_component_paths(resolved)
-    return str(resolved)
+    return verified(resolved)
 
 
 def validate_contracts() -> dict:
-    root = repo_root()
+    root = _discover_checkout_source() or repo_root()
     contract_file = root / "product-contract.json"
     compat_file = root / "harness-compatibility.json"
-    contract = read_json(contract_file) if contract_file.is_file() else {"native_version": "0.1.0"}
-    compat = read_json(compat_file) if compat_file.is_file() else {"harness": "workbuddy"}
+    contract = read_json(contract_file)
+    compat = read_json(compat_file)
     return dict(
         schema="mindie-candidate-check/1",
         status="validated",
         harness=compat.get("harness", "workbuddy"),
-        native_version=contract.get("native_version", "0.1.0"),
+        native_version=contract["native_version"],
     )
 
 
@@ -337,7 +333,7 @@ def ensure_default_profile(
     python_exe: str | None = None,
 ) -> dict:
     apply_enterprise_transport_env()
-    interpreter = ensure_runtime_python(python_exe=python_exe)
+    interpreter = ensure_runtime_python(python_exe=python_exe, config=config)
 
     cfg_file = config_path(config)
     eng_file = engine_config_path(cfg_file)
@@ -349,19 +345,8 @@ def ensure_default_profile(
     sdir.mkdir(mode=0o700, parents=True, exist_ok=True)
     data_root.mkdir(mode=0o700, parents=True, exist_ok=True)
 
-    direct_root = plugin_root().parent.parent
-    is_temp_checkout = _is_temp_checkout_path(direct_root) or "mindie-agent-wb-install" in str(scripts_dir)
-    if not (direct_root / "pyproject.toml").is_file() or is_temp_checkout:
-        src_hint = direct_root if (direct_root / "pyproject.toml").is_file() else None
-        resolved_source = stage_source_baseline(src_hint, workspace_root=workspace_root)
-    else:
-        stage_source_baseline(direct_root, workspace_root=workspace_root)
-        resolved_source = repo_root(cfg_file)
-
-    if is_temp_checkout or direct_root.resolve() != resolved_source.resolve():
-        staged_scripts = (resolved_source / "plugins" / "mindie-agent" / "scripts").resolve()
-        if staged_scripts.is_dir():
-            scripts_dir = staged_scripts
+    resolved_source = stage_source_baseline(workspace_root=workspace_root)
+    scripts_dir = (resolved_source / "plugins/mindie-agent/scripts").resolve()
 
     validation = validate_contracts()
     gitleaks = shutil.which("gitleaks")
@@ -374,7 +359,7 @@ def ensure_default_profile(
                     break
 
     cfile = consent_path(cfg_file)
-    engine_payload = dict(
+    engine_payload = dict(read_json(eng_file) if eng_file.is_file() else {},
         schema="mindie-engine-config/1",
         harness="wb",
         domain=domain,
@@ -391,7 +376,7 @@ def ensure_default_profile(
     )
     atomic_write_json(eng_file, engine_payload)
 
-    adapter_payload = dict(
+    adapter_payload = dict(read_json(cfg_file) if cfg_file.is_file() else {},
         schema="mindie-adapter-config/1",
         harness="workbuddy",
         python=interpreter,
@@ -719,8 +704,9 @@ def main(argv: list[str] | None = None) -> int:
         importlib.util.find_spec("mindie_knowledge") is None
         and os.environ.get("_MINDIE_WB_SETUP_BOOTSTRAPPED") != "1"
     ):
-        staged_src = stage_source_baseline()
-        target_py = ensure_runtime_python(staged_src)
+        source = _discover_checkout_source() or repo_root(args.config)
+        target_py = ensure_runtime_python(source, config=args.config)
+        staged_src = stage_source_baseline(source)
         env = apply_enterprise_transport_env(dict(os.environ))
         env["_MINDIE_WB_SETUP_BOOTSTRAPPED"] = "1"
         env["MINDIE_WB_SOURCE_ROOT"] = str(staged_src)

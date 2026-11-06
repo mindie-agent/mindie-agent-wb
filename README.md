@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.7-0F766E.svg" alt="Release v0.1.7"></a>
+  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.8-0F766E.svg" alt="Release v0.1.8"></a>
 </p>
 
 ## 1. 架构概览：连接器（Connector）与插件（Plugin）双重兼容
@@ -95,7 +95,7 @@ WorkBuddy 桌面端界面中的 **Connector（连接器）** 底层即基于 **A
    ```sh
    MINDIE_TMP="${TMPDIR:-/tmp}/mindie-agent-wb-install"
    rm -rf "$MINDIE_TMP"
-   git -c core.longpaths=true -c core.autocrlf=false clone --depth 1 --branch v0.1.7 https://github.com/mindie-agent/mindie-agent-wb.git "$MINDIE_TMP"
+   git -c core.longpaths=true -c core.autocrlf=false clone --depth 1 --branch v0.1.8 https://github.com/mindie-agent/mindie-agent-wb.git "$MINDIE_TMP"
    UV_SYSTEM_CERTS=true UV_NATIVE_TLS=true uv run --no-project --python 3.13 python \
      "$MINDIE_TMP/plugins/mindie-agent/scripts/setup.py" init --install-wb --workspace-root "$PWD"
    ```
