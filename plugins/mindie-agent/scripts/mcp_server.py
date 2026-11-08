@@ -384,6 +384,11 @@ def _resolve_component_argv(adapter: dict, component: str) -> list[str]:
     raise FileNotFoundError(f"{bin_name} is not installed in the active MindIE runtime")
 
 
+def _npu_top_tool_error(message: str, extra: dict | None = None) -> dict:
+    payload = dict(error=message, **(extra or {}))
+    return dict(content=[dict(type="text", text=message)], structuredContent=payload, isError=True)
+
+
 def _execute_npu_top_observation(name: str, args: dict) -> dict:
     from npu_top.client import ClientError, VawsTopClient
     from npu_top.mcp import handle_request
@@ -391,14 +396,19 @@ def _execute_npu_top_observation(name: str, args: dict) -> dict:
     try:
         client = VawsTopClient()
     except ClientError as exc:
-        payload = {"error": str(exc), "status": "monitor_unavailable"}
-        return dict(content=[dict(type="text", text=str(exc))], structuredContent=payload, isError=True)
+        return _npu_top_tool_error(str(exc), {"status": "monitor_unavailable"})
     req = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args}}
-    resp = handle_request(req, client) or {}
+    resp = handle_request(req, client)
+    if not isinstance(resp, dict):
+        return _npu_top_tool_error(f"npu-top MCP returned {type(resp).__name__} instead of a JSON-RPC object")
     if "error" in resp:
-        msg = resp["error"].get("message", "npu-top MCP call failed")
-        return dict(content=[dict(type="text", text=msg)], structuredContent={"error": msg}, isError=True)
-    return resp.get("result") or dict(content=[dict(type="text", text="{}")], structuredContent={}, isError=False)
+        err = resp["error"]
+        msg = err.get("message", "npu-top MCP call failed") if isinstance(err, dict) else str(err)
+        return _npu_top_tool_error(msg)
+    if "result" not in resp or not isinstance(resp["result"], dict):
+        kind = type(resp.get("result")).__name__ if "result" in resp else "missing"
+        return _npu_top_tool_error(f"npu-top MCP result is {kind}, not an object")
+    return resp["result"]
 
 
 def _admission_failure(exc):
@@ -761,7 +771,10 @@ def serve(surface: str = "tools") -> int:
             continue
         try:
             req = json.loads(raw_line.decode("utf-8"))
-        except ValueError:
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            resp = dict(jsonrpc="2.0", id=None, error=dict(code=-32700, message=f"Parse error: {type(exc).__name__}: {exc}"))
+            sys.stdout.buffer.write((canonical(resp) + "\n").encode("utf-8"))
+            sys.stdout.buffer.flush()
             continue
         resp = handle_rpc(req, surface)
         if resp is not None:

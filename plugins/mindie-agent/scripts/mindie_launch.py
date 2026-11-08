@@ -9,13 +9,17 @@ timeout budgets.
 
 [Invariants]
 - Enforces `HOOK_TOTAL = 10.0s >= HOOK_EXEC_BUDGET (8.0s) + CLEANUP_GRACE (2.0s)`.
+- Hook failures emit a host-visible error payload and a non-zero exit; they never
+  print `{"suppressOutput": true}` with exit 0.
 - If the configured profile interpreter differs from `sys.executable`, re-executes
   into the configured interpreter so `mindie_knowledge`, `remote_dev`,
   `mindie_diagnostics`, `mindie_profiler`, `mindie_sim`, `mindie_coordinator`,
   `mindie_debugger`, and `npu_top` imports resolve deterministically.
 
 [Timeouts & Locks]
-- `HOOK_TOTAL = 10.0s`, `HOOK_LOCK_BUDGET = 2.0s`, `BOOTSTRAP_TOTAL = 540.0s`.
+- `HOOK_TOTAL = 10.0s`, `HOOK_LOCK_BUDGET = 2.0s`, `BOOTSTRAP_TOTAL = 540.0s`,
+  `SETUP_REEXEC_GRACE = 15.0s`. Hook re-exec uses `timeout=HOOK_TOTAL`; setup
+  re-exec uses `timeout=BOOTSTRAP_TOTAL + SETUP_REEXEC_GRACE`; MCP stdio stays unbounded.
 
 [Side-Effect Policy]
 - Delegates hook, MCP, setup, and update execution to `bridge.py`,
@@ -34,9 +38,20 @@ if str(HERE) not in sys.path:
 
 from paths import apply_enterprise_transport_env, config_path, data_home, read_json
 
-HOOK_TOTAL = 10.0
+HOOK_EXEC_BUDGET = 8.0
+HOOK_CLEANUP_GRACE = 2.0
+HOOK_TOTAL = HOOK_EXEC_BUDGET + HOOK_CLEANUP_GRACE
 HOOK_LOCK_BUDGET = 2.0
 BOOTSTRAP_TOTAL = 540.0
+SETUP_REEXEC_GRACE = 15.0
+_HOOK_EVENT_NAMES = {
+    "session-start": "SessionStart",
+    "user-prompt-expansion": "UserPromptExpansion",
+    "user-prompt-submit": "UserPromptSubmit",
+    "pre-invocation": "UserPromptSubmit",
+    "pre-tool-use": "PreToolUse",
+    "stop": "Stop",
+}
 
 
 def _norm_python_path(py_exe: str | Path) -> Path:
@@ -90,6 +105,26 @@ def _preferred_python() -> str | None:
                 except ValueError:
                     pass
     return None
+
+
+def _emit_hook_failure(action: str, exc: BaseException) -> int:
+    import json
+
+    event_name = _HOOK_EVENT_NAMES.get(action, action)
+    detail = f"{type(exc).__name__}: {exc}"
+    print(f"MindIE WorkBuddy hook error: {detail}", file=sys.stderr)
+    hook_out: dict = {
+        "hookSpecificOutput": {
+            "hookEventName": event_name,
+            "systemMessage": f"MindIE WorkBuddy hook failed: {detail}",
+        }
+    }
+    if action == "pre-tool-use":
+        hook_out["hookSpecificOutput"]["permissionDecision"] = "deny"
+        hook_out["hookSpecificOutput"]["permissionDecisionReason"] = detail
+    sys.stdout.buffer.write((json.dumps(hook_out, ensure_ascii=False) + "\n").encode("utf-8"))
+    sys.stdout.buffer.flush()
+    return 1
 
 
 def _reexec_stdio(stream):
@@ -159,7 +194,16 @@ def main(argv: list[str] | None = None) -> int:
             run_kwargs["stdin"] = _reexec_stdio(sys.stdin)
             run_kwargs["stdout"] = _reexec_stdio(sys.stdout)
             run_kwargs["stderr"] = _reexec_stdio(sys.stderr)
-        proc = subprocess.run([target_py, "-I", str(target_script), *argv], **run_kwargs)
+        if argv[0] == "hook":
+            run_kwargs["timeout"] = HOOK_TOTAL
+        elif argv[0] == "setup":
+            run_kwargs["timeout"] = BOOTSTRAP_TOTAL + SETUP_REEXEC_GRACE
+        try:
+            proc = subprocess.run([target_py, "-I", str(target_script), *argv], **run_kwargs)
+        except subprocess.TimeoutExpired as exc:
+            if argv[0] == "hook":
+                return _emit_hook_failure(argv[1] if len(argv) > 1 else "session-start", exc)
+            raise
         return int(proc.returncode)
 
     role = argv[0]
@@ -169,11 +213,10 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             return bridge.main(rest)
+        except TimeoutError:
+            raise
         except Exception as exc:
-            print(f"MindIE WorkBuddy hook warning: {type(exc).__name__}: {exc}", file=sys.stderr)
-            sys.stdout.buffer.write(b'{"suppressOutput":true}\n')
-            sys.stdout.buffer.flush()
-            return 0
+            return _emit_hook_failure(rest[0] if rest else "session-start", exc)
     if role == "mcp":
         import mcp_server
 

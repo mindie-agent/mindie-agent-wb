@@ -17,7 +17,8 @@ registers the plugin & connector in `~/.workbuddy/plugins/` (`install-wb`).
 
 [Timeouts & Locks]
 - Local config validation/writes are immediate; first-time `uv sync` runtime
-  bootstrap is bounded by `BOOTSTRAP_TIMEOUT = 540.0s`.
+  bootstrap is bounded by `BOOTSTRAP_TIMEOUT = 540.0s`. Interpreter re-exec uses
+  `timeout=BOOTSTRAP_TIMEOUT + 15.0s`.
 
 [Side-Effect Policy]
 - Writes `wb.json`, `wb.engine.json`, `mindie-community.json`, and
@@ -29,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import errno
 import hashlib
 import json
 import os
@@ -409,15 +411,18 @@ def ensure_default_profile(
 
 
 def _read_optional_json(path: Path) -> tuple[str, dict]:
-    if not path.exists():
-        return "missing", {}
     try:
+        path.stat()
         return "ok", read_json(path)
+    except TimeoutError:
+        raise
     except FileNotFoundError:
         return "missing", {}
     except ValueError:
         return "corrupt", {}
-    except OSError:
+    except OSError as exc:
+        if exc.errno in {errno.ENOENT, errno.ENOTDIR}:
+            return "missing", {}
         return "unreadable", {}
 
 
@@ -425,32 +430,51 @@ def sharing_status(config: str | Path | None = None) -> dict:
     """Return current community sharing and fault reporting status using stdlib only."""
     cfg_file = config_path(config)
     consent_state, consent_data = _read_optional_json(consent_path(cfg_file))
-    _, comm_data = _read_optional_json(community_config_path(cfg_file))
-    _, diag_data = _read_optional_json(diagnostics_config_path(cfg_file))
+    comm_state, comm_data = _read_optional_json(community_config_path(cfg_file))
+    diag_state, diag_data = _read_optional_json(diagnostics_config_path(cfg_file))
 
     choice = consent_data.get("choice") if consent_state == "ok" else None
     if consent_state == "ok" and choice not in (None, "contribute", "read-only", "later", "disabled"):
         consent_state, choice = "corrupt", None
     choice_revision = consent_data.get("choice_revision") if consent_state == "ok" else None
-    repair_required = consent_state in {"corrupt", "unreadable"}
-    sharing_enabled = bool(comm_data.get("enabled", False)) and choice == "contribute"
-    reporting_sub = diag_data.get("reporting") if isinstance(diag_data.get("reporting"), dict) else {}
-    reporting_enabled = bool(
+    repair_required = any(
+        state in {"corrupt", "unreadable"} for state in (consent_state, comm_state, diag_state)
+    )
+    sharing_enabled = comm_state == "ok" and bool(comm_data.get("enabled", False)) and choice == "contribute"
+    reporting_sub = diag_data.get("reporting") if diag_state == "ok" and isinstance(diag_data.get("reporting"), dict) else {}
+    reporting_enabled = diag_state == "ok" and bool(
         reporting_sub.get("enabled", False) or diag_data.get("decision") == "enabled" or diag_data.get("enabled") is True
     )
+    if comm_state == "ok":
+        repository = comm_data.get("repository", "mindie-agent/knowledge-vllm-ascend")
+        fork = comm_data.get("fork")
+        account = comm_data.get("account")
+        project_roots = list(comm_data.get("project_roots") or [])
+    elif comm_state == "missing":
+        repository = "mindie-agent/knowledge-vllm-ascend"
+        fork = None
+        account = None
+        project_roots = []
+    else:
+        repository = None
+        fork = None
+        account = None
+        project_roots = []
     return {
         "schema": "mindie-sharing-status/1",
         "harness": "workbuddy",
         "consent_state": consent_state,
         "consent_choice": choice,
         "choice_revision": choice_revision,
+        "community_state": comm_state,
+        "diagnostics_state": diag_state,
         "sharing_enabled": sharing_enabled,
         "community_enabled": sharing_enabled,
         "reporting_enabled": reporting_enabled,
-        "repository": comm_data.get("repository", "mindie-agent/knowledge-vllm-ascend"),
-        "fork": comm_data.get("fork"),
-        "account": comm_data.get("account"),
-        "project_roots": list(comm_data.get("project_roots") or []),
+        "repository": repository,
+        "fork": fork,
+        "account": account,
+        "project_roots": project_roots,
         "needs_onboarding_prompt": (not repair_required) and (choice not in {"contribute", "disabled"}),
         "repair_required": repair_required,
     }
@@ -573,12 +597,19 @@ def configure_community(
         consent_store.record_choice(cfile, "disabled")
         updated = settings_mod.write(comm_file, **write_kwargs)
 
+    payload = updated.as_dict()
     if hasattr(consent_store, "activate_reporting"):
         try:
             consent_store.activate_reporting(cfile, config=diagnostics_config_path(cfg_file), roots=roots or None, ensure=False)
-        except Exception:
-            pass
-    return updated.as_dict()
+        except TimeoutError:
+            raise
+        except Exception as exc:
+            payload["reporting_error"] = f"{type(exc).__name__}: {exc}"
+            print(
+                f"MindIE WorkBuddy reporting activation failed: {payload['reporting_error']}",
+                file=sys.stderr,
+            )
+    return payload
 
 
 def _reexec_stdio(stream):
@@ -718,7 +749,11 @@ def main(argv: list[str] | None = None) -> int:
                 stdout=_reexec_stdio(sys.stdout),
                 stderr=_reexec_stdio(sys.stderr),
             )
-        proc = subprocess.run([target_py, "-I", str(Path(__file__).resolve()), *incoming], **run_kwargs)
+        proc = subprocess.run(
+            [target_py, "-I", str(Path(__file__).resolve()), *incoming],
+            timeout=BOOTSTRAP_TIMEOUT + 15.0,
+            **run_kwargs,
+        )
         return int(proc.returncode)
 
     if args.cmd == "init":
@@ -751,7 +786,10 @@ def main(argv: list[str] | None = None) -> int:
             visibility=args.visibility,
             repository=args.repository,
         )
-    return _emit_json(result)
+    code = _emit_json(result)
+    if isinstance(result, dict) and result.get("reporting_error"):
+        return 1
+    return code
 
 
 if __name__ == "__main__":

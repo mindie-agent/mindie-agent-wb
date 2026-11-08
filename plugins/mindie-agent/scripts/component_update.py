@@ -102,7 +102,24 @@ def trigger_background_update_if_due(*, config: str | Path | None = None) -> boo
             kwargs["start_new_session"] = True
         subprocess.Popen([str(py_exe), "-I", str(Path(__file__).resolve()), "--config", str(cfg_file)], **kwargs)
         return True
-    except Exception:
+    except TimeoutError:
+        raise
+    except Exception as exc:
+        try:
+            atomic_write_json(
+                data_home() / "wb-component-update-status.json",
+                {
+                    "checked_at": time.time(),
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+        except OSError:
+            pass
+        print(
+            f"MindIE WorkBuddy background component update failed to start: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
         return False
 
 
@@ -276,8 +293,24 @@ def check(
         active_python = _norm_python_path(current_python)
         try:
             installed = read_inventory(active_python, timeout=15.0)
-        except Exception:
-            installed = {}
+        except TimeoutError:
+            raise
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            try:
+                atomic_write_json(
+                    status_file,
+                    {"checked_at": time.time(), "status": "failed", "error": error},
+                )
+            except OSError:
+                pass
+            return dict(
+                schema="mindie-component-update/1",
+                harness="workbuddy",
+                status="failed",
+                python=active_python,
+                inventory_error=error,
+            )
 
     result: dict = dict(
         schema="mindie-component-update/1",
