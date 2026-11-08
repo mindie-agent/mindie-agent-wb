@@ -61,8 +61,12 @@ UPDATE_CHECK_INTERVAL = 300.0
 UPDATE_FAILURE_BACKOFF = 60.0
 
 
-def trigger_background_update_if_due(*, config: str | Path | None = None) -> bool:
-    """Spawn a non-blocking background `component_update.py` check if the interval has elapsed."""
+def trigger_background_update_if_due(*, config: str | Path | None = None) -> bool | None:
+    """Spawn a non-blocking background `component_update.py` check if the interval has elapsed.
+
+    Returns True if a child was spawned, False if the check was skipped, and None
+    if spawn failed after recording `status=failed`.
+    """
     if os.environ.get("MINDIE_CONFIG_HOME") is not None:
         return False
     try:
@@ -111,7 +115,7 @@ def trigger_background_update_if_due(*, config: str | Path | None = None) -> boo
             f"MindIE WorkBuddy background component update failed to start: {type(exc).__name__}: {exc}",
             file=sys.stderr,
         )
-        return False
+        return None
 
 
 def _record_background_update_failure(exc: BaseException) -> None:

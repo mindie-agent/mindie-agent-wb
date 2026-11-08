@@ -605,6 +605,7 @@ def configure_community(
             raise
         except Exception as exc:
             payload["reporting_error"] = f"{type(exc).__name__}: {exc}"
+            payload["status"] = "partial"
             print(
                 f"MindIE WorkBuddy reporting activation failed: {payload['reporting_error']}",
                 file=sys.stderr,

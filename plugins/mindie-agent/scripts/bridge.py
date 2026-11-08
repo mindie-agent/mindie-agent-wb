@@ -72,7 +72,24 @@ def handle_session_start(event: dict) -> dict:
             remember_session_context(session, workspace_root=ws, transcript_path=tp)
     except ValueError:
         pass
-    trigger_background_update_if_due()
+    spawned = trigger_background_update_if_due()
+    if spawned is None:
+        from paths import data_home, read_json
+
+        detail = "spawn failed"
+        try:
+            recorded = read_json(data_home() / "wb-component-update-status.json")
+            error = recorded.get("error") if isinstance(recorded, dict) else None
+            if isinstance(error, str) and error.strip():
+                detail = error
+        except (OSError, ValueError):
+            pass
+        return dict(
+            hookSpecificOutput=dict(
+                hookEventName="SessionStart",
+                systemMessage=f"MindIE WorkBuddy background component update failed to start: {detail}",
+            )
+        )
     return {"suppressOutput": True}
 
 

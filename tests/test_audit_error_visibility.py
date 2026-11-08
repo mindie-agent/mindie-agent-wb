@@ -91,6 +91,26 @@ def test_mcp_parse_error_writes_jsonrpc_32700(monkeypatch: pytest.MonkeyPatch):
     assert "Parse error" in payload["error"]["message"]
 
 
+def test_mcp_non_object_request_is_invalid_request_not_crash(monkeypatch: pytest.MonkeyPatch):
+    stdout = _CaptureStdout()
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(b"[]\n123\n\"tool\"\n")))
+    monkeypatch.setattr(sys, "stdout", stdout)
+    assert mcp_server.serve("tools") == 0
+    frames = [json.loads(line) for line in stdout.buffer.getvalue().decode("utf-8").splitlines() if line]
+    assert len(frames) == 3
+    for payload in frames:
+        assert payload["jsonrpc"] == "2.0"
+        assert payload["id"] is None
+        assert payload["error"]["code"] == -32600
+        assert "Invalid Request" in payload["error"]["message"]
+
+    params = mcp_server.handle_rpc(
+        {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": ["npu_status"]},
+        "tools",
+    )
+    assert params["error"]["code"] == -32602
+
+
 def test_hook_exception_is_visible_nonzero_not_suppress_output(monkeypatch: pytest.MonkeyPatch):
     import bridge
 
@@ -300,11 +320,36 @@ def test_background_update_spawn_failure_writes_failed_status(
         raise OSError(13, "Permission denied")
 
     monkeypatch.setattr(subprocess, "Popen", boom)
-    assert component_update.trigger_background_update_if_due(config=cfg) is False
+    assert component_update.trigger_background_update_if_due(config=cfg) is None
     status = json.loads((isolated_mindie_env["data_home"] / "wb-component-update-status.json").read_text(encoding="utf-8"))
     assert status["status"] == "failed"
     assert "PermissionError" in status["error"]
     assert "13" in status["error"]
+
+
+def test_session_start_spawn_failure_is_visible_not_suppress_output(
+    monkeypatch: pytest.MonkeyPatch, isolated_mindie_env: dict
+):
+    import subprocess
+
+    import bridge
+
+    cfg = isolated_mindie_env["config_path"]
+    cfg.write_text(json.dumps({"python": sys.executable}), encoding="utf-8")
+    monkeypatch.delenv("MINDIE_CONFIG_HOME", raising=False)
+    monkeypatch.setenv("MINDIE_AGENT_CONFIG", str(cfg))
+    monkeypatch.setenv("MINDIE_DATA_HOME", str(isolated_mindie_env["data_home"]))
+
+    def boom(*_args, **_kwargs):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(subprocess, "Popen", boom)
+    out = bridge.handle_session_start({"session_id": "454c6ee9-afea-47be-8188-abb9c7fb1f26"})
+    assert out.get("suppressOutput") is not True
+    message = out["hookSpecificOutput"]["systemMessage"]
+    assert out["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+    assert "failed to start" in message
+    assert "PermissionError" in message or "13" in message
 
 
 def test_background_update_timeout_does_not_leave_in_progress(
@@ -417,15 +462,34 @@ def test_reporting_activation_failure_is_visible(
     monkeypatch.setattr(consent_store, "activate_reporting", boom, raising=False)
     payload = setup.configure_community(config=cfg, enabled=True, fork="user/knowledge-vllm-ascend")
     assert payload["enabled"] is True
+    assert payload["status"] == "partial"
     assert "reporting_error" in payload
     assert "OSError" in payload["reporting_error"]
     err = capsys.readouterr().err
     assert "reporting activation failed" in err
 
     monkeypatch.setattr(
+        mcp_server,
+        "_resolve_claim",
+        lambda *_a, **_k: {"session": "s", "bind_id": None, "workspace_root": str(isolated_mindie_env["home"])},
+    )
+    sharing = mcp_server.call_knowledge_surface(
+        "mindie_entry",
+        {"op": "sharing-enable"},
+        config=cfg,
+    )
+    assert sharing["isError"] is True
+    assert sharing["structuredContent"]["status"] == "partial"
+    assert "reporting_error" in sharing["structuredContent"]
+
+    monkeypatch.setattr(
         setup,
         "configure_community",
-        lambda **_k: {"enabled": True, "reporting_error": "OSError: reporting config unreadable"},
+        lambda **_k: {
+            "enabled": True,
+            "status": "partial",
+            "reporting_error": "OSError: reporting config unreadable",
+        },
     )
     rc = setup.main(["sharing", "--enable", "--config", str(cfg)])
     assert rc == 1

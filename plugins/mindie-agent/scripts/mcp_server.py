@@ -675,7 +675,7 @@ def call_knowledge_surface(
                 payload = status_facts(session, config=config)
             else:
                 raise ValueError(f"unsupported mindie_entry op: {op}")
-            succeeded = payload.get("status") != "partial"
+            succeeded = payload.get("status") != "partial" and not payload.get("reporting_error")
             result = dict(
                 content=[dict(type="text", text=canonical(payload))],
                 structuredContent=payload,
@@ -714,6 +714,8 @@ def call_knowledge_surface(
 
 def handle_rpc(request: dict, surface: str = "tools", *, config=None) -> dict | None:
     """Process one JSON-RPC 2.0 request or notification for `remote`, `tools`, or `knowledge`."""
+    if not isinstance(request, dict):
+        return dict(jsonrpc="2.0", id=None, error=dict(code=-32600, message="Invalid Request: JSON-RPC request must be an object"))
     method = request.get("method")
     req_id = request.get("id")
     if req_id is None:
@@ -740,7 +742,10 @@ def handle_rpc(request: dict, surface: str = "tools", *, config=None) -> dict | 
             tools = component_tools()
         return dict(jsonrpc="2.0", id=req_id, result=dict(tools=tools))
     if method == "tools/call":
-        params = request.get("params") or {}
+        params = request.get("params")
+        if params is not None and not isinstance(params, dict):
+            return dict(jsonrpc="2.0", id=req_id, error=dict(code=-32602, message="Invalid params"))
+        params = params or {}
         tool_name = params.get("name")
         arguments = params.get("arguments") or {}
         meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
@@ -754,10 +759,6 @@ def handle_rpc(request: dict, surface: str = "tools", *, config=None) -> dict | 
             out = call_tools_surface(tool_name, arguments, meta=meta, config=config)
         return dict(jsonrpc="2.0", id=req_id, result=out)
     return dict(jsonrpc="2.0", id=req_id, error=dict(code=-32601, message=f"Method not found: {method}"))
-
-
-def handle_message(surface: str, message: dict) -> dict | None:
-    return handle_rpc(message, surface)
 
 
 def serve(surface: str = "tools") -> int:
