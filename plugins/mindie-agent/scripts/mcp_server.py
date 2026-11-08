@@ -405,10 +405,11 @@ def _execute_npu_top_observation(name: str, args: dict) -> dict:
         err = resp["error"]
         msg = err.get("message", "npu-top MCP call failed") if isinstance(err, dict) else str(err)
         return _npu_top_tool_error(msg)
-    if "result" not in resp or not isinstance(resp["result"], dict):
-        kind = type(resp.get("result")).__name__ if "result" in resp else "missing"
-        return _npu_top_tool_error(f"npu-top MCP result is {kind}, not an object")
-    return resp["result"]
+    result = resp.get("result")
+    if not isinstance(result, dict) or not isinstance(result.get("content"), list):
+        kind = "missing" if "result" not in resp else ("empty object" if result == {} else type(result).__name__)
+        return _npu_top_tool_error(f"npu-top MCP result is {kind} without content")
+    return result
 
 
 def _admission_failure(exc):

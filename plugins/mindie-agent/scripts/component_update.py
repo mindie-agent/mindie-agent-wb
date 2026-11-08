@@ -102,25 +102,30 @@ def trigger_background_update_if_due(*, config: str | Path | None = None) -> boo
             kwargs["start_new_session"] = True
         subprocess.Popen([str(py_exe), "-I", str(Path(__file__).resolve()), "--config", str(cfg_file)], **kwargs)
         return True
-    except TimeoutError:
+    except TimeoutError as exc:
+        _record_background_update_failure(exc)
         raise
     except Exception as exc:
-        try:
-            atomic_write_json(
-                data_home() / "wb-component-update-status.json",
-                {
-                    "checked_at": time.time(),
-                    "status": "failed",
-                    "error": f"{type(exc).__name__}: {exc}",
-                },
-            )
-        except OSError:
-            pass
+        _record_background_update_failure(exc)
         print(
             f"MindIE WorkBuddy background component update failed to start: {type(exc).__name__}: {exc}",
             file=sys.stderr,
         )
         return False
+
+
+def _record_background_update_failure(exc: BaseException) -> None:
+    try:
+        atomic_write_json(
+            data_home() / "wb-component-update-status.json",
+            {
+                "checked_at": time.time(),
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+        )
+    except OSError:
+        pass
 
 
 def _norm_python_path(py_exe: str | Path) -> str:

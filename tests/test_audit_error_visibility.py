@@ -65,6 +65,11 @@ def test_npu_top_none_or_missing_result_is_error_not_empty_success(monkeypatch: 
     bad = mcp_server._execute_npu_top_observation("npu_status", {})
     assert bad["isError"] is True
 
+    _patch_npu_top(monkeypatch, lambda req, client: {"jsonrpc": "2.0", "id": 1, "result": {}})
+    empty = mcp_server._execute_npu_top_observation("npu_status", {})
+    assert empty["isError"] is True
+    assert "empty object" in empty["structuredContent"]["error"]
+
     _patch_npu_top(
         monkeypatch,
         lambda req, client: {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "ok"}]}},
@@ -96,7 +101,7 @@ def test_hook_exception_is_visible_nonzero_not_suppress_output(monkeypatch: pyte
     stdout = _CaptureStdout()
     monkeypatch.setattr(sys, "stdout", stdout)
     rc = mindie_launch.main(["hook", "pre-tool-use"])
-    assert rc == 1
+    assert rc == 0
     payload = json.loads(stdout.buffer.getvalue())
     assert payload.get("suppressOutput") is not True
     hook_out = payload["hookSpecificOutput"]
@@ -104,6 +109,22 @@ def test_hook_exception_is_visible_nonzero_not_suppress_output(monkeypatch: pyte
     assert hook_out["permissionDecision"] == "deny"
     assert "RuntimeError" in hook_out["permissionDecisionReason"]
     assert "publish_bind failed" in hook_out["systemMessage"]
+
+
+def test_hook_timeout_is_json_deny_not_bare_exit(monkeypatch: pytest.MonkeyPatch):
+    import bridge
+
+    def _boom(_argv):
+        raise TimeoutError("hook budget exhausted")
+
+    monkeypatch.setattr(bridge, "main", _boom)
+    stdout = _CaptureStdout()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    rc = mindie_launch.main(["hook", "pre-tool-use"])
+    assert rc == 0
+    payload = json.loads(stdout.buffer.getvalue())
+    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "TimeoutError" in payload["hookSpecificOutput"]["permissionDecisionReason"]
 
 
 def test_hook_and_setup_reexec_pass_timeout_mcp_does_not(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -245,6 +266,29 @@ def test_background_update_spawn_failure_writes_failed_status(
     assert status["status"] == "failed"
     assert "PermissionError" in status["error"]
     assert "13" in status["error"]
+
+
+def test_background_update_timeout_does_not_leave_in_progress(
+    monkeypatch: pytest.MonkeyPatch, isolated_mindie_env: dict
+):
+    import subprocess
+
+    cfg = isolated_mindie_env["config_path"]
+    cfg.write_text(json.dumps({"python": sys.executable}), encoding="utf-8")
+    monkeypatch.delenv("MINDIE_CONFIG_HOME", raising=False)
+    monkeypatch.setenv("MINDIE_AGENT_CONFIG", str(cfg))
+    monkeypatch.setenv("MINDIE_DATA_HOME", str(isolated_mindie_env["data_home"]))
+
+    def boom(*_args, **_kwargs):
+        raise TimeoutError("spawn timed out")
+
+    monkeypatch.setattr(subprocess, "Popen", boom)
+    with pytest.raises(TimeoutError, match="spawn timed out"):
+        component_update.trigger_background_update_if_due(config=cfg)
+    status = json.loads((isolated_mindie_env["data_home"] / "wb-component-update-status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "failed"
+    assert "TimeoutError" in status["error"]
+    assert status["status"] != "in_progress"
 
 
 def test_inventory_read_failure_is_failed_not_up_to_date(

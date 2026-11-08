@@ -9,8 +9,9 @@ timeout budgets.
 
 [Invariants]
 - Enforces `HOOK_TOTAL = 10.0s >= HOOK_EXEC_BUDGET (8.0s) + CLEANUP_GRACE (2.0s)`.
-- Hook failures emit a host-visible error payload and a non-zero exit; they never
-  print `{"suppressOutput": true}` with exit 0.
+- Hook failures emit a host-visible error payload and exit 0. WorkBuddy fail-opens
+  on a bare non-zero exit, so PreToolUse uses `permissionDecision=deny` rather than
+  `return 1`. They never print `{"suppressOutput": true}` to hide the fault.
 - If the configured profile interpreter differs from `sys.executable`, re-executes
   into the configured interpreter so `mindie_knowledge`, `remote_dev`,
   `mindie_diagnostics`, `mindie_profiler`, `mindie_sim`, `mindie_coordinator`,
@@ -124,7 +125,7 @@ def _emit_hook_failure(action: str, exc: BaseException) -> int:
         hook_out["hookSpecificOutput"]["permissionDecisionReason"] = detail
     sys.stdout.buffer.write((json.dumps(hook_out, ensure_ascii=False) + "\n").encode("utf-8"))
     sys.stdout.buffer.flush()
-    return 1
+    return 0
 
 
 def _reexec_stdio(stream):
@@ -213,8 +214,6 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             return bridge.main(rest)
-        except TimeoutError:
-            raise
         except Exception as exc:
             return _emit_hook_failure(rest[0] if rest else "session-start", exc)
     if role == "mcp":
