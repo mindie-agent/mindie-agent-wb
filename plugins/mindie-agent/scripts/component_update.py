@@ -298,8 +298,6 @@ def check(
         active_python = _norm_python_path(current_python)
         try:
             installed = read_inventory(active_python, timeout=15.0)
-        except TimeoutError:
-            raise
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             try:

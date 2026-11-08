@@ -11,7 +11,8 @@ timeout budgets.
 - Enforces `HOOK_TOTAL = 10.0s >= HOOK_EXEC_BUDGET (8.0s) + CLEANUP_GRACE (2.0s)`.
 - Hook failures emit a host-visible error payload and exit 0. WorkBuddy fail-opens
   on a bare non-zero exit, so PreToolUse uses `permissionDecision=deny` rather than
-  `return 1`. They never print `{"suppressOutput": true}` to hide the fault.
+  propagating interpreter/child non-zero status. They never print
+  `{"suppressOutput": true}` to hide the fault.
 - If the configured profile interpreter differs from `sys.executable`, re-executes
   into the configured interpreter so `mindie_knowledge`, `remote_dev`,
   `mindie_diagnostics`, `mindie_profiler`, `mindie_sim`, `mindie_coordinator`,
@@ -150,6 +151,15 @@ def main(argv: list[str] | None = None) -> int:
     if not argv:
         raise SystemExit("mindie_launch requires a subcommand: hook | mcp | setup | update")
 
+    try:
+        return _dispatch(argv)
+    except Exception as exc:
+        if argv[0] == "hook":
+            return _emit_hook_failure(argv[1] if len(argv) > 1 else "session-start", exc)
+        raise
+
+
+def _dispatch(argv: list[str]) -> int:
     target_py = _preferred_python()
     target_script = Path(__file__).resolve()
     if argv[0] in {"hook", "mcp"} and config_path().is_file():
@@ -205,6 +215,11 @@ def main(argv: list[str] | None = None) -> int:
             if argv[0] == "hook":
                 return _emit_hook_failure(argv[1] if len(argv) > 1 else "session-start", exc)
             raise
+        if argv[0] == "hook" and proc.returncode != 0:
+            return _emit_hook_failure(
+                argv[1] if len(argv) > 1 else "session-start",
+                RuntimeError(f"hook interpreter exited {proc.returncode}"),
+            )
         return int(proc.returncode)
 
     role = argv[0]

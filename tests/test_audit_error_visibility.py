@@ -148,6 +148,45 @@ def test_hook_and_setup_reexec_pass_timeout_mcp_does_not(tmp_path: Path, monkeyp
     assert seen[-1]["kwargs"]["timeout"] == mindie_launch.BOOTSTRAP_TOTAL + mindie_launch.SETUP_REEXEC_GRACE
 
 
+def test_hook_reexec_nonzero_is_json_deny_not_fail_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import subprocess
+
+    other = tmp_path / "other-python"
+    other.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(mindie_launch, "_preferred_python", lambda: str(other))
+    monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: types.SimpleNamespace(returncode=1))
+    stdout = _CaptureStdout()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    rc = mindie_launch.main(["hook", "pre-tool-use"])
+    assert rc == 0
+    payload = json.loads(stdout.buffer.getvalue())
+    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "exited 1" in payload["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_hook_startup_error_is_json_deny_not_bare_exit(
+    monkeypatch: pytest.MonkeyPatch, isolated_mindie_env: dict
+):
+    cfg = isolated_mindie_env["config_path"]
+    cfg.write_text(
+        json.dumps(
+            {
+                "python": sys.executable,
+                "product_validation": {"native_version": "9.9.9"},
+                "source_root": str(isolated_mindie_env["home"] / "missing-src"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    stdout = _CaptureStdout()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    rc = mindie_launch.main(["hook", "pre-tool-use"])
+    assert rc == 0
+    payload = json.loads(stdout.buffer.getvalue())
+    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "RuntimeError" in payload["hookSpecificOutput"]["permissionDecisionReason"]
+
+
 def test_pretooluse_outer_timeout_exceeds_hook_total():
     hooks = json.loads((PLUGIN_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))
     pretool = hooks["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"]
@@ -308,6 +347,33 @@ def test_inventory_read_failure_is_failed_not_up_to_date(
     assert "OSError" in res["inventory_error"]
     assert "installed" not in res
     assert res.get("installed") != {}
+
+
+def test_inventory_timeout_clears_in_progress(
+    monkeypatch: pytest.MonkeyPatch, isolated_mindie_env: dict
+):
+    import time
+
+    from paths import atomic_write_json, data_home
+
+    cfg = isolated_mindie_env["config_path"]
+    setup.ensure_default_profile(config=cfg, workspace_root=isolated_mindie_env["home"])
+    monkeypatch.setattr(component_update, "prepare", lambda *_a, **_k: None)
+    atomic_write_json(
+        data_home() / "wb-component-update-status.json",
+        {"checked_at": time.time(), "status": "in_progress"},
+    )
+
+    def boom(*_a, **_k):
+        raise TimeoutError("inventory timed out")
+
+    monkeypatch.setattr("mindie_knowledge.component_runtime.read_inventory", boom)
+    res = component_update.check(config=cfg, source=REPO_ROOT)
+    assert res["status"] == "failed"
+    assert "TimeoutError" in res["inventory_error"]
+    status = json.loads((data_home() / "wb-component-update-status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "failed"
+    assert "TimeoutError" in status["error"]
 
 
 def test_sharing_status_unreadable_configs_require_repair_without_fake_defaults(
