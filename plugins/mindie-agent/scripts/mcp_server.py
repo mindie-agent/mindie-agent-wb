@@ -721,7 +721,10 @@ def handle_rpc(request: dict, surface: str = "tools", *, config=None) -> dict | 
     if req_id is None:
         return None
     if method == "initialize":
-        trigger_background_update_if_due(config=config)
+        try:
+            trigger_background_update_if_due(config=config)
+        except Exception as exc:
+            print(f"MindIE WorkBuddy background update failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return dict(
             jsonrpc="2.0",
             id=req_id,

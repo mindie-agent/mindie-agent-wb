@@ -375,6 +375,18 @@ def test_background_update_timeout_does_not_leave_in_progress(
     assert status["status"] != "in_progress"
 
 
+def test_mcp_initialize_survives_background_update_timeout(monkeypatch: pytest.MonkeyPatch):
+    def boom(*_a, **_k):
+        raise TimeoutError("spawn timed out")
+
+    monkeypatch.setattr(mcp_server, "trigger_background_update_if_due", boom)
+    resp = mcp_server.handle_rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize"}, "tools")
+    assert resp["jsonrpc"] == "2.0"
+    assert resp["id"] == 1
+    assert "protocolVersion" in resp["result"]
+    assert "error" not in resp
+
+
 def test_inventory_read_failure_is_failed_not_up_to_date(
     monkeypatch: pytest.MonkeyPatch, isolated_mindie_env: dict
 ):
@@ -491,6 +503,36 @@ def test_reporting_activation_failure_is_visible(
             "reporting_error": "OSError: reporting config unreadable",
         },
     )
+    rc = setup.main(["sharing", "--enable", "--config", str(cfg)])
+    assert rc == 1
+
+
+def test_reporting_return_failure_is_partial_not_success(
+    monkeypatch: pytest.MonkeyPatch, isolated_mindie_env: dict, capsys: pytest.CaptureFixture[str]
+):
+    from mindie_knowledge import consent_store
+
+    cfg = isolated_mindie_env["config_path"]
+    setup.ensure_default_profile(config=cfg, workspace_root=isolated_mindie_env["home"])
+    monkeypatch.setattr(
+        consent_store,
+        "activate_reporting",
+        lambda *_a, **_k: {"status": "configuration_unavailable", "enabled": False},
+        raising=False,
+    )
+    payload = setup.configure_community(config=cfg, enabled=True, fork="user/knowledge-vllm-ascend")
+    assert payload["enabled"] is True
+    assert payload["status"] == "partial"
+    assert "configuration_unavailable" in payload["reporting_error"]
+    assert "reporting activation failed" in capsys.readouterr().err
+    monkeypatch.setattr(
+        mcp_server,
+        "_resolve_claim",
+        lambda *_a, **_k: {"session": "s", "bind_id": None, "workspace_root": str(isolated_mindie_env["home"])},
+    )
+    sharing = mcp_server.call_knowledge_surface("mindie_entry", {"op": "sharing-enable"}, config=cfg)
+    assert sharing["isError"] is True
+    assert sharing["structuredContent"]["status"] == "partial"
     rc = setup.main(["sharing", "--enable", "--config", str(cfg)])
     assert rc == 1
 

@@ -600,16 +600,18 @@ def configure_community(
     payload = updated.as_dict()
     if hasattr(consent_store, "activate_reporting"):
         try:
-            consent_store.activate_reporting(cfile, config=diagnostics_config_path(cfg_file), roots=roots or None, ensure=False)
+            reporting = consent_store.activate_reporting(
+                cfile, config=diagnostics_config_path(cfg_file), roots=roots or None, ensure=False)
         except TimeoutError:
             raise
         except Exception as exc:
-            payload["reporting_error"] = f"{type(exc).__name__}: {exc}"
+            reporting = {"status": f"{type(exc).__name__}: {exc}"}
+        expected = {"configured", "running"} if enabled else {"disabled"}
+        if not isinstance(reporting, dict) or reporting.get("status") not in expected:
+            err = reporting.get("status") if isinstance(reporting, dict) else type(reporting).__name__
+            payload["reporting_error"] = str(err)
             payload["status"] = "partial"
-            print(
-                f"MindIE WorkBuddy reporting activation failed: {payload['reporting_error']}",
-                file=sys.stderr,
-            )
+            print(f"MindIE WorkBuddy reporting activation failed: {err}", file=sys.stderr)
     return payload
 
 
