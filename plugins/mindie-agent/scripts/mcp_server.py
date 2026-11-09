@@ -384,6 +384,11 @@ def _resolve_component_argv(adapter: dict, component: str) -> list[str]:
     raise FileNotFoundError(f"{bin_name} is not installed in the active MindIE runtime")
 
 
+def _npu_top_tool_error(message: str, extra: dict | None = None) -> dict:
+    payload = dict(error=message, **(extra or {}))
+    return dict(content=[dict(type="text", text=message)], structuredContent=payload, isError=True)
+
+
 def _execute_npu_top_observation(name: str, args: dict) -> dict:
     from npu_top.client import ClientError, VawsTopClient
     from npu_top.mcp import handle_request
@@ -391,14 +396,20 @@ def _execute_npu_top_observation(name: str, args: dict) -> dict:
     try:
         client = VawsTopClient()
     except ClientError as exc:
-        payload = {"error": str(exc), "status": "monitor_unavailable"}
-        return dict(content=[dict(type="text", text=str(exc))], structuredContent=payload, isError=True)
+        return _npu_top_tool_error(str(exc), {"status": "monitor_unavailable"})
     req = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args}}
-    resp = handle_request(req, client) or {}
+    resp = handle_request(req, client)
+    if not isinstance(resp, dict):
+        return _npu_top_tool_error(f"npu-top MCP returned {type(resp).__name__} instead of a JSON-RPC object")
     if "error" in resp:
-        msg = resp["error"].get("message", "npu-top MCP call failed")
-        return dict(content=[dict(type="text", text=msg)], structuredContent={"error": msg}, isError=True)
-    return resp.get("result") or dict(content=[dict(type="text", text="{}")], structuredContent={}, isError=False)
+        err = resp["error"]
+        msg = err.get("message", "npu-top MCP call failed") if isinstance(err, dict) else str(err)
+        return _npu_top_tool_error(msg)
+    result = resp.get("result")
+    if not isinstance(result, dict) or not isinstance(result.get("content"), list):
+        kind = "missing" if "result" not in resp else ("empty object" if result == {} else type(result).__name__)
+        return _npu_top_tool_error(f"npu-top MCP result is {kind} without content")
+    return result
 
 
 def _admission_failure(exc):
@@ -664,7 +675,7 @@ def call_knowledge_surface(
                 payload = status_facts(session, config=config)
             else:
                 raise ValueError(f"unsupported mindie_entry op: {op}")
-            succeeded = payload.get("status") != "partial"
+            succeeded = payload.get("status") != "partial" and not payload.get("reporting_error")
             result = dict(
                 content=[dict(type="text", text=canonical(payload))],
                 structuredContent=payload,
@@ -703,12 +714,17 @@ def call_knowledge_surface(
 
 def handle_rpc(request: dict, surface: str = "tools", *, config=None) -> dict | None:
     """Process one JSON-RPC 2.0 request or notification for `remote`, `tools`, or `knowledge`."""
+    if not isinstance(request, dict):
+        return dict(jsonrpc="2.0", id=None, error=dict(code=-32600, message="Invalid Request: JSON-RPC request must be an object"))
     method = request.get("method")
     req_id = request.get("id")
     if req_id is None:
         return None
     if method == "initialize":
-        trigger_background_update_if_due(config=config)
+        try:
+            trigger_background_update_if_due(config=config)
+        except Exception as exc:
+            print(f"MindIE WorkBuddy background update failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return dict(
             jsonrpc="2.0",
             id=req_id,
@@ -729,7 +745,10 @@ def handle_rpc(request: dict, surface: str = "tools", *, config=None) -> dict | 
             tools = component_tools()
         return dict(jsonrpc="2.0", id=req_id, result=dict(tools=tools))
     if method == "tools/call":
-        params = request.get("params") or {}
+        params = request.get("params")
+        if params is not None and not isinstance(params, dict):
+            return dict(jsonrpc="2.0", id=req_id, error=dict(code=-32602, message="Invalid params"))
+        params = params or {}
         tool_name = params.get("name")
         arguments = params.get("arguments") or {}
         meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
@@ -745,10 +764,6 @@ def handle_rpc(request: dict, surface: str = "tools", *, config=None) -> dict | 
     return dict(jsonrpc="2.0", id=req_id, error=dict(code=-32601, message=f"Method not found: {method}"))
 
 
-def handle_message(surface: str, message: dict) -> dict | None:
-    return handle_rpc(message, surface)
-
-
 def serve(surface: str = "tools") -> int:
     """Run the line-delimited JSON-RPC 2.0 loop over stdin/stdout."""
     if surface == "components":
@@ -761,7 +776,10 @@ def serve(surface: str = "tools") -> int:
             continue
         try:
             req = json.loads(raw_line.decode("utf-8"))
-        except ValueError:
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            resp = dict(jsonrpc="2.0", id=None, error=dict(code=-32700, message=f"Parse error: {type(exc).__name__}: {exc}"))
+            sys.stdout.buffer.write((canonical(resp) + "\n").encode("utf-8"))
+            sys.stdout.buffer.flush()
             continue
         resp = handle_rpc(req, surface)
         if resp is not None:

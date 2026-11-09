@@ -42,7 +42,7 @@
           {
             "type": "command",
             "command": "python3 -I \"${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py\" hook pre-tool-use",
-            "timeout": 10
+            "timeout": 15
           }
         ]
       }

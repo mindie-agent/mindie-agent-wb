@@ -61,8 +61,12 @@ UPDATE_CHECK_INTERVAL = 300.0
 UPDATE_FAILURE_BACKOFF = 60.0
 
 
-def trigger_background_update_if_due(*, config: str | Path | None = None) -> bool:
-    """Spawn a non-blocking background `component_update.py` check if the interval has elapsed."""
+def trigger_background_update_if_due(*, config: str | Path | None = None) -> bool | None:
+    """Spawn a non-blocking background `component_update.py` check if the interval has elapsed.
+
+    Returns True if a child was spawned, False if the check was skipped, and None
+    if spawn failed after recording `status=failed`.
+    """
     if os.environ.get("MINDIE_CONFIG_HOME") is not None:
         return False
     try:
@@ -102,8 +106,30 @@ def trigger_background_update_if_due(*, config: str | Path | None = None) -> boo
             kwargs["start_new_session"] = True
         subprocess.Popen([str(py_exe), "-I", str(Path(__file__).resolve()), "--config", str(cfg_file)], **kwargs)
         return True
-    except Exception:
-        return False
+    except TimeoutError as exc:
+        _record_background_update_failure(exc)
+        raise
+    except Exception as exc:
+        _record_background_update_failure(exc)
+        print(
+            f"MindIE WorkBuddy background component update failed to start: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+
+
+def _record_background_update_failure(exc: BaseException) -> None:
+    try:
+        atomic_write_json(
+            data_home() / "wb-component-update-status.json",
+            {
+                "checked_at": time.time(),
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+        )
+    except OSError:
+        pass
 
 
 def _norm_python_path(py_exe: str | Path) -> str:
@@ -276,8 +302,22 @@ def check(
         active_python = _norm_python_path(current_python)
         try:
             installed = read_inventory(active_python, timeout=15.0)
-        except Exception:
-            installed = {}
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            try:
+                atomic_write_json(
+                    status_file,
+                    {"checked_at": time.time(), "status": "failed", "error": error},
+                )
+            except OSError:
+                pass
+            return dict(
+                schema="mindie-component-update/1",
+                harness="workbuddy",
+                status="failed",
+                python=active_python,
+                inventory_error=error,
+            )
 
     result: dict = dict(
         schema="mindie-component-update/1",
