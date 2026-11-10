@@ -20,9 +20,15 @@ jobs:
       - name: Run LF line-ending check
         run: python3 .github/scripts/check_lf_eol.py
 
+  continuity:
+    uses: ./.github/workflows/task-continuity.yml
+
+  upgrade:
+    uses: ./.github/workflows/runtime-upgrade.yml
+
   release-ready:
     name: release-ready
-    needs: [lf-gate]
+    needs: [lf-gate, continuity, upgrade]
     if: always()
     runs-on: ubuntu-latest
     steps:
