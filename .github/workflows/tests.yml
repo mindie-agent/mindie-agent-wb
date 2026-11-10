@@ -19,3 +19,19 @@ jobs:
           persist-credentials: false
       - name: Run LF line-ending check
         run: python3 .github/scripts/check_lf_eol.py
+
+  continuity:
+    uses: ./.github/workflows/task-continuity.yml
+
+  upgrade:
+    uses: ./.github/workflows/runtime-upgrade.yml
+
+  release-ready:
+    name: release-ready
+    needs: [lf-gate, continuity, upgrade]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: python -c 'import json,os; assert all(job["result"] == "success" for job in json.loads(os.environ["RESULTS"]).values()), "required CI failed or was skipped"'
