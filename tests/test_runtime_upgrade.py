@@ -142,8 +142,10 @@ def test_old_runtime_pair_survives_prepare_failure_and_upgrades(tmp_path, monkey
         raw = invoke([old_python, "-I", launcher, "mcp", "remote"],
                      "\n".join(json.dumps(row) for row in requests) + "\n")
         replies = [json.loads(line) for line in raw.splitlines()]
-        assert [row["id"] for row in replies] == [1, 2, 3]
-        assert replies[1]["result"]["isError"] is False, replies[1]
+        assert sorted(row["id"] for row in replies) == [1, 2, 3]
+        by_id = {row["id"]: row for row in replies}
+        assert by_id[2]["result"]["isError"] is False, by_id[2]
+        assert by_id[3]["result"] == {}
 
     status(scripts / "mindie_launch.py")
     shutil.copytree(ROOT / "plugins/mindie-agent", native, dirs_exist_ok=True)
