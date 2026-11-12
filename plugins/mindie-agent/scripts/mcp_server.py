@@ -1,41 +1,13 @@
-"""Stdio JSON-RPC 2.0 MCP server (`mcp_server.py`) for Tencent WorkBuddy (`remote`, `tools`, `knowledge`).
+"""WorkBuddy MCP surfaces with selected-generation discovery and execution.
 
-[Role]
-Serves the three MindIE stdio MCP surfaces registered in WorkBuddy (`.mcp.json`
-and `mcp.json`), exposing all 53 MindIE MCP tools:
-- `remote` (`mindie-remote-dev`): 33 remote NPU development tools (20 canonical
-  `remote_*` + 13 native WorkBuddy tools `remote_Read`..`remote_ViewImage`).
-- `tools` (`mindie-tools`): 14 deterministic component & observation tools
-  (`mindie_status`, `profiler`, `sim`, `coordinator`, `debugger`, `npu_top`,
-  `npu_status`, `server_status`, `list_mounts`, `find_npu_capacity`,
-  `npu_telemetry_window`, `list_npu_servers`, `diagnostics_status`,
-  `diagnostics_bundle`).
-- `knowledge` (`mindie-knowledge`): 6 graded L1-L4 knowledge & entry tools
-  (`mindie_entry`, `knowledge_query`, `knowledge_explain`, `knowledge_feedback`,
-  `knowledge_distill`, `knowledge_sync`).
-
-[Invariants]
-- Every `tools/call` resolves session identity from a one-shot `PreToolUse` bind
-  (`claim_bind`), WorkBuddy `params._meta["workbuddy.ai/conversationId"]`, or
-  `WB_CONVERSATION_ID`; model-supplied session identity keys in `params.arguments`
-  are rejected.
-- Propagates `WB_CONVERSATION_ID`, `CODEBUDDY_SESSION_ID`, and `AGY_CONVERSATION_ID`
-  into `coordinator` child environments for lease attribution.
-- Receipt Honesty: once a primary remote, component, or knowledge operation
-  succeeds, any local SQLite receipt (`RemoteReceipts.finish`) or `finish_bind`
-  error keeps `isError=False` and attaches `receipt_warning` +
-  `receipt_unconfirmed=True`.
-
-[Timeouts & Locks]
-- Uses SQLite WAL mode with `busy_timeout=5000` (`timeout=5.0`) for
-  `RemoteReceipts` (`remote-receipts.sqlite3`).
-- Enforces `remote_timeout(name, args) = max(minimum, inner_wait + 60.0s grace)`
-  and decouples `COMPONENT_CAPTURE_LIMIT_BYTES = 16 MiB` from MCP response
-  truncation budgets.
-
-[Side-Effect Policy]
-- `initialize` and `tools/list` are pure catalog operations; `tools/call` claims
-  binds, records remote receipts, and executes the requested tool.
+[Role] Serve remote, deterministic component and explicitly enabled knowledge tools.
+[Invariants] Native PreToolUse binds or WorkBuddy call metadata establish identity;
+model arguments cannot supply it. Completed operations retain isError=False if
+local receipt/bind accounting fails, with receipt_warning/receipt_unconfirmed.
+[Timeouts & Locks] SQLite WAL + busy_timeout=5000; remote inner wait + 60s grace;
+component capture (16 MiB) remains independent of the response preview budget.
+[Side-Effect Policy] Discovery never activates knowledge; tools/call claims the
+native bind and executes once. The stable facade follows the selected profile.
 """
 
 from __future__ import annotations
@@ -696,7 +668,8 @@ def handle_rpc(request: dict, surface: str = "tools", *, config=None) -> dict | 
             result=dict(
                 protocolVersion="2025-11-25",
                 capabilities=dict(tools=dict(listChanged=False)),
-                serverInfo=dict(name=f"mindie-wb-{surface}", version="0.1.1"),
+                serverInfo=dict(name=f"mindie-wb-{surface}",
+                                version=read_json(HERE.parent / "plugin.json")["version"]),
             ),
         )
     if method == "ping":
@@ -757,6 +730,11 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     args = [x for x in argv if x != "--once"]
     surface = args[0] if args else "tools"
+    if "--once" not in argv:
+        from remote_dev.mcp.catalog_refresh import profile_selection, serve_selected
+        return serve_selected(lambda: profile_selection(
+            config_path(), HERE, surface, config_env="MINDIE_AGENT_CONFIG", plugin_env="WB_PLUGIN_ROOT",
+        ))
     return serve(surface)
 
 

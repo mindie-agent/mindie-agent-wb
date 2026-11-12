@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mindie-agent-wb"
-version = "0.1.9"
+version = "0.1.10"
 description = "Tencent WorkBuddy (CodeBuddy Agent CLI) native harness plugin & connector adapter for MindIE Agent"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "mindie-knowledge>=0.13.0",
-    "remote-dev>=0.10.0",
+    "remote-dev>=0.11.9",
     "mindie-diagnostics>=0.5.0",
     "mindie-coordinator>=0.6.0",
     "mindie-profiler>=0.5.0",
@@ -28,9 +28,9 @@ test = [
 
 [tool.uv.sources]
 mindie-knowledge = { git = "https://github.com/mindie-agent/knowledge", rev = "3c478a19b5542b38520c7f98b87a07f37e305021" }
-remote-dev = { git = "https://github.com/mindie-agent/remote-dev", rev = "991ef7863b2b208f94f54a29db4ac5be50884ea3" }
+remote-dev = { git = "https://github.com/mindie-agent/remote-dev", rev = "6e9882e0fa495bf2feeef29ec86492498d364531" }
 mindie-diagnostics = { git = "https://github.com/mindie-agent/diagnostics", rev = "f338788cecc56f7aff1dccab1d53426c9e28fe7f" }
-mindie-coordinator = { git = "https://github.com/mindie-agent/coordinator", rev = "819b0deb7bea994d4dff9c009200a48dd9300cc4" }
+mindie-coordinator = { git = "https://github.com/mindie-agent/coordinator", rev = "db9b0c6432001d6049056eabd37422d0bfb9f75a" }
 mindie-profiler = { git = "https://github.com/mindie-agent/profiler", rev = "79d97e75bff7351b0472b93c03b072c1cf47f5e7" }
 mindie-sim = { git = "https://github.com/mindie-agent/sim", rev = "6f1d5a871a7b1ef20ff7a8cab33aaf4637fb3f66" }
 mindie-debugger = { git = "https://github.com/mindie-agent/debugger", rev = "e9406b2b178335190d5cb59dff4d6985894497ba" }
@@ -39,9 +39,9 @@ npu-top = { git = "https://github.com/mindie-agent/npu-top", rev = "8f0cb3ec6639
 [tool.uv]
 override-dependencies = [
     "mindie-knowledge @ git+https://github.com/mindie-agent/knowledge@3c478a19b5542b38520c7f98b87a07f37e305021",
-    "remote-dev @ git+https://github.com/mindie-agent/remote-dev@991ef7863b2b208f94f54a29db4ac5be50884ea3",
+    "remote-dev @ git+https://github.com/mindie-agent/remote-dev@6e9882e0fa495bf2feeef29ec86492498d364531",
     "mindie-diagnostics @ git+https://github.com/mindie-agent/diagnostics@f338788cecc56f7aff1dccab1d53426c9e28fe7f",
-    "mindie-coordinator @ git+https://github.com/mindie-agent/coordinator@819b0deb7bea994d4dff9c009200a48dd9300cc4",
+    "mindie-coordinator @ git+https://github.com/mindie-agent/coordinator@db9b0c6432001d6049056eabd37422d0bfb9f75a",
     "mindie-profiler @ git+https://github.com/mindie-agent/profiler@79d97e75bff7351b0472b93c03b072c1cf47f5e7",
     "mindie-sim @ git+https://github.com/mindie-agent/sim@6f1d5a871a7b1ef20ff7a8cab33aaf4637fb3f66",
     "mindie-debugger @ git+https://github.com/mindie-agent/debugger@e9406b2b178335190d5cb59dff4d6985894497ba",
