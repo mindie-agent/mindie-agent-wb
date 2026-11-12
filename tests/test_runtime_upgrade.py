@@ -1,4 +1,5 @@
 """Tier 3: a formal old runtime keeps serving until a compatible pair activates."""
+import asyncio
 import io
 import json
 import os
@@ -11,6 +12,9 @@ import tarfile
 import tempfile
 import time
 
+import anyio
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 import pytest
 import setup
 from bounded import run
@@ -132,20 +136,22 @@ def test_old_runtime_pair_survives_prepare_failure_and_upgrades(tmp_path, monkey
     new_launcher = scripts / "mindie_launch.py"
 
     def status(launcher):
-        requests = [
-            dict(jsonrpc="2.0", id=1, method="initialize"),
-            dict(jsonrpc="2.0", id=2, method="tools/call", params=dict(
-                name="remote_auth", arguments=dict(host="auth.example", port=22, action="status"),
-                _meta={"workbuddy.ai/conversationId": "454c6ee9-afea-47be-8188-abb9c7fb1f26"})),
-            dict(jsonrpc="2.0", id=3, method="ping"),
-        ]
-        raw = invoke([old_python, "-I", launcher, "mcp", "remote"],
-                     "\n".join(json.dumps(row) for row in requests) + "\n")
-        replies = [json.loads(line) for line in raw.splitlines()]
-        assert sorted(row["id"] for row in replies) == [1, 2, 3]
-        by_id = {row["id"]: row for row in replies}
-        assert by_id[2]["result"]["isError"] is False, by_id[2]
-        assert by_id[3]["result"] == {}
+        async def conversation():
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, "old-runtime acceptance exceeded its 85s budget"
+            parameters = StdioServerParameters(
+                command=str(old_python), args=["-I", str(launcher), "mcp", "remote"],
+                env=dict(os.environ))
+            with anyio.fail_after(remaining):
+                async with stdio_client(parameters) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        result = await session.call_tool(
+                            "remote_auth", dict(host="auth.example", port=22, action="status"),
+                            meta={"workbuddy.ai/conversationId": "454c6ee9-afea-47be-8188-abb9c7fb1f26"})
+                        assert result.isError is False, result
+                        await session.send_ping()
+        asyncio.run(conversation())
 
     status(scripts / "mindie_launch.py")
     shutil.copytree(ROOT / "plugins/mindie-agent", native, dirs_exist_ok=True)
