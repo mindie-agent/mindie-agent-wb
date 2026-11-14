@@ -15,7 +15,7 @@ jobs:
     secrets:
       MINDIE_RELEASE_DEPLOY_KEY: ${{ secrets.MINDIE_RELEASE_DEPLOY_KEY }}
     with:
-      release-notes-path: docs/releases/mindie-agent-wb-0.1.10.md
+      release-notes-path: docs/releases/mindie-agent-wb-0.1.11.md
       version-files: |
         pyproject.toml
         plugins/mindie-agent/plugin.json
@@ -28,4 +28,9 @@ jobs:
         .venv/bin/python .github/scripts/check_lf_eol.py
         .venv/bin/python -m pytest -q -m "not live_npu"
       build-command: |
-        git archive --format=tar.gz --prefix="mindie-agent-wb-$RELEASE_VERSION/" --output="$RELEASE_ASSETS_DIR/mindie-agent-wb-$RELEASE_VERSION.tar.gz" "$GITHUB_SHA"
+        stamp="$RUNNER_TEMP/diagnostic-build.json"
+        printf '{"version":"%s","revision":"%s"}\n' "$RELEASE_VERSION" "$GITHUB_SHA" > "$stamp"
+        git archive --format=tar.gz \
+          --prefix="mindie-agent-wb-$RELEASE_VERSION/plugins/mindie-agent/scripts/" --add-file="$stamp" \
+          --prefix="mindie-agent-wb-$RELEASE_VERSION/" \
+          --output="$RELEASE_ASSETS_DIR/mindie-agent-wb-$RELEASE_VERSION.tar.gz" "$GITHUB_SHA"
