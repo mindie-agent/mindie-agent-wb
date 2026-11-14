@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -37,14 +38,26 @@ OLD_TARGETS = {
 
 
 def test_old_runtime_pair_survives_prepare_failure_and_upgrades(tmp_path, monkeypatch, request):
-    deadline = time.monotonic() + 85.0
+    budget_seconds = 240.0 if os.name == "nt" else 120.0
+    deadline = time.monotonic() + budget_seconds
     tmp_path = Path(tempfile.mkdtemp(prefix="mindie-upgrade-", dir=ROOT.parent))
+
+    def _force_writable(func, target_path, _exc):
+        try:
+            os.chmod(target_path, stat.S_IWRITE | stat.S_IREAD)
+            func(target_path)
+        except TimeoutError:
+            raise
+        except OSError:
+            pass
 
     def clean_native_directory():
         resolved = tmp_path.resolve()
         assert resolved.parent == ROOT.parent.resolve() and resolved.name.startswith("mindie-upgrade-")
-        # Component generations contain long third-party package paths on Windows.
-        shutil.rmtree("\\\\?\\" + str(resolved) if os.name == "nt" else resolved)
+        # Component generations contain long third-party package paths and read-only git packfiles on Windows.
+        raw = str(resolved)
+        rm_target = (raw if raw.startswith("\\\\?\\") else f"\\\\?\\{raw}") if os.name == "nt" else resolved
+        shutil.rmtree(rm_target, onexc=_force_writable)
 
     request.addfinalizer(clean_native_directory)
     home, config_home, data_home = (tmp_path / name for name in ("home", "config", "data"))
@@ -62,7 +75,7 @@ def test_old_runtime_pair_survives_prepare_failure_and_upgrades(tmp_path, monkey
 
     def invoke(command, stdin="", *, cwd=None):
         remaining = deadline - time.monotonic()
-        assert remaining > 0, "old-runtime acceptance exceeded its 85s budget"
+        assert remaining > 0, f"old-runtime acceptance exceeded its {budget_seconds}s budget"
         result = run([str(arg) for arg in command], stdin, timeout=remaining,
                      max_output=256 * 1024, env=dict(os.environ), cwd=cwd)
         assert result.returncode == 0, result.stderr + result.stdout
@@ -104,10 +117,15 @@ def test_old_runtime_pair_survives_prepare_failure_and_upgrades(tmp_path, monkey
         old_python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         invoke(["uv", "--no-config", "pip", "install", "--python", old_python,
                 "-r", req, "--overrides", overrides])
-    version = invoke([old_python, "-I", "-c",
+    version = invoke([old_python, "-I", "-X", "utf8", "-c",
                       "import importlib.metadata as m; print(m.version('remote-dev'))"]).strip()
     assert version == "0.11.5"
-    archive = subprocess.check_output(["git", "archive", OLD_TAG], cwd=ROOT, timeout=10)
+    archive = subprocess.check_output(
+        ["git", "archive", OLD_TAG],
+        cwd=ROOT,
+        timeout=10,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+    )
     legacy = tmp_path / "legacy"
     legacy.mkdir()
     with tarfile.open(fileobj=io.BytesIO(archive)) as packed:
@@ -121,7 +139,7 @@ def test_old_runtime_pair_survives_prepare_failure_and_upgrades(tmp_path, monkey
     monkeypatch.setenv(f"{HOST}_PLUGIN_ROOT", str(native))
     scripts = native / "scripts"
     config = config_path()
-    invoke([old_python, "-I", scripts / "setup.py", "init", "--config", config], cwd=legacy)
+    invoke([old_python, "-I", "-X", "utf8", scripts / "setup.py", "init", "--config", config], cwd=legacy)
     old_profile = json.loads(config.read_text(encoding="utf-8"))
     old_profile["user_setting"] = "preserve"
     config.write_text(json.dumps(old_profile), encoding="utf-8")
@@ -138,9 +156,9 @@ def test_old_runtime_pair_survives_prepare_failure_and_upgrades(tmp_path, monkey
     def status(launcher):
         async def conversation():
             remaining = deadline - time.monotonic()
-            assert remaining > 0, "old-runtime acceptance exceeded its 85s budget"
+            assert remaining > 0, f"old-runtime acceptance exceeded its {budget_seconds}s budget"
             parameters = StdioServerParameters(
-                command=str(old_python), args=["-I", str(launcher), "mcp", "remote"],
+                command=str(old_python), args=["-I", "-X", "utf8", str(launcher), "mcp", "remote"],
                 env=dict(os.environ))
             with anyio.fail_after(remaining):
                 async with stdio_client(parameters) as (read, write):
@@ -167,7 +185,7 @@ def test_old_runtime_pair_survives_prepare_failure_and_upgrades(tmp_path, monkey
     assert (retained_scripts / "mcp_server.py").read_bytes() == previous_payload
     status(new_launcher)
 
-    invoke([old_python, "-I", ROOT / "plugins/mindie-agent/scripts/setup.py",
+    invoke([old_python, "-I", "-X", "utf8", ROOT / "plugins/mindie-agent/scripts/setup.py",
             "init", "--config", config])
     active = json.loads(config.read_text(encoding="utf-8"))
     assert Path(active["python"]) != Path(old_python)
@@ -176,7 +194,6 @@ def test_old_runtime_pair_survives_prepare_failure_and_upgrades(tmp_path, monkey
     assert active["state_dir"] == old_profile["state_dir"]
     assert (retained_scripts / "mcp_server.py").read_bytes() == previous_payload
     assert job_state.read_text(encoding="utf-8") == "owned job remains unchanged"
-    invoke([active["python"], "-I", "-c",
+    invoke([active["python"], "-I", "-X", "utf8", "-c",
             "from remote_dev.mcp.outcome import operation_outcome"])
     status(new_launcher)
-

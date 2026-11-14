@@ -3,9 +3,11 @@
   "mcpServers": {
     "mindie-remote-dev": {
       "type": "stdio",
-      "command": "python3",
+      "command": "python",
       "args": [
         "-I",
+        "-X",
+        "utf8",
         "${PLUGIN_ROOT}/scripts/mindie_launch.py",
         "mcp",
         "remote"
@@ -25,9 +27,11 @@
     },
     "mindie-tools": {
       "type": "stdio",
-      "command": "python3",
+      "command": "python",
       "args": [
         "-I",
+        "-X",
+        "utf8",
         "${PLUGIN_ROOT}/scripts/mindie_launch.py",
         "mcp",
         "tools"
@@ -46,9 +50,11 @@
     },
     "mindie-knowledge": {
       "type": "stdio",
-      "command": "python3",
+      "command": "python",
       "args": [
         "-I",
+        "-X",
+        "utf8",
         "${PLUGIN_ROOT}/scripts/mindie_launch.py",
         "mcp",
         "knowledge"

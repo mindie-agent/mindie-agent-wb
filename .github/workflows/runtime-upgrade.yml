@@ -8,13 +8,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
-      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_COUNT: '2'
       GIT_CONFIG_KEY_0: core.longpaths
       GIT_CONFIG_VALUE_0: 'true'
+      GIT_CONFIG_KEY_1: core.autocrlf
+      GIT_CONFIG_VALUE_1: 'false'
       GH_TOKEN: ${{ github.token }}
       MINDIE_TEST_RUNTIME_UPGRADE: '1'
     steps:

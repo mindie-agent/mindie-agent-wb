@@ -15,7 +15,6 @@ pytestmark = pytest.mark.live_host
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = REPO_ROOT / "plugins" / "mindie-agent"
 LAUNCH_SCRIPT = PLUGIN_ROOT / "scripts" / "mindie_launch.py"
-WORKBUDDY_CLI = Path("/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy")
 LIVE_SESSION = "9c6fa414-9fc6-49e0-8238-939cb9128812"
 
 
@@ -23,13 +22,15 @@ def _run_launch(args: list[str], stdin_text: str = "", *, env: dict | None = Non
     run_env = dict(os.environ if env is None else env)
     run_env.pop("_MINDIE_WB_REEXEC", None)
     return subprocess.run(
-        [sys.executable, "-I", str(LAUNCH_SCRIPT), *args],
+        [sys.executable, "-I", "-X", "utf8", str(LAUNCH_SCRIPT), *args],
         input=stdin_text,
         env=run_env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=timeout,
         check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
     )
 
 
@@ -140,11 +141,9 @@ def test_live_mindie_launch_hooks_and_all_three_mcp_stdio_servers(tmp_path: Path
         assert tools_lines[idx]["result"]["isError"] is False, f"Tool call id={idx+1} failed: {tools_lines[idx]}"
 
     # 4. Live stdio `mcp knowledge` (`tools/list` + `mindie_entry` + `knowledge_sync` + `knowledge_query`)
-    local_feed_repo = Path(
-        "/Users/maoxx241/.local/share/mindie-agent/kimi/vllm-ascend/state-v1/feed/"
-        "b7c5bd4d68f997d5c714d1f0a783fa2b0be6150dd7bd7de372da2e74ae0abe84/repo.git"
-    )
-    if local_feed_repo.is_dir():
+    raw_feed = os.environ.get("MINDIE_TEST_FEED_REPO", "")
+    local_feed_repo = Path(raw_feed) if raw_feed else None
+    if local_feed_repo is not None and local_feed_repo.is_dir():
         eng_cfg_file = Path(os.environ["MINDIE_CONFIG_HOME"]) / "mindie-agent" / "wb.engine.json"
         if eng_cfg_file.is_file():
             eng_cfg = json.loads(eng_cfg_file.read_text(encoding="utf-8"))

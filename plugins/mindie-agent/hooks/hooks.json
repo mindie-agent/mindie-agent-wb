@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -I \"${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py\" hook session-start",
+            "command": "python -I -X utf8 \"${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py\" hook session-start",
             "timeout": 15
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -I \"${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py\" hook user-prompt-expansion",
+            "command": "python -I -X utf8 \"${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py\" hook user-prompt-expansion",
             "timeout": 15
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -I \"${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py\" hook user-prompt-submit",
+            "command": "python -I -X utf8 \"${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py\" hook user-prompt-submit",
             "timeout": 15
           }
         ]
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -I \"${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py\" hook pre-tool-use",
+            "command": "python -I -X utf8 \"${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py\" hook pre-tool-use",
             "timeout": 15
           }
         ]
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -I \"${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py\" hook stop",
+            "command": "python -I -X utf8 \"${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py\" hook stop",
             "timeout": 15
           }
         ]

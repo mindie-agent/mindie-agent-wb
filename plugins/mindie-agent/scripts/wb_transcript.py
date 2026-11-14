@@ -68,6 +68,27 @@ GESTURE_PREFIX_RE = re.compile(
 )
 
 
+def _strip_win_extended_prefix(raw: str) -> str:
+    if os.name != "nt":
+        return raw
+    if raw.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + raw[8:]
+    if raw.startswith("\\\\?\\"):
+        return raw[4:]
+    return raw
+
+
+def _canonical_path(path: str | Path) -> str:
+    try:
+        resolved = str(Path(path).resolve())
+    except TimeoutError:
+        raise
+    except OSError:
+        resolved = str(Path(path))
+    cleaned = _strip_win_extended_prefix(resolved)
+    return os.path.normcase(cleaned) if os.name == "nt" else cleaned
+
+
 @dataclass(frozen=True)
 class FileIdentity:
     path: str
@@ -108,7 +129,7 @@ class FileIdentity:
             ):
                 return None
             return FileIdentity(
-                path,
+                _canonical_path(path),
                 int(data["dev"]),
                 int(data["ino"]),
                 0,
@@ -137,7 +158,7 @@ def identify(path: str | Path) -> FileIdentity | None:
     finally:
         os.close(fd)
     return FileIdentity(
-        str(Path(path).resolve()),
+        _canonical_path(path),
         stat.st_dev,
         stat.st_ino,
         stat.st_size,
@@ -233,9 +254,9 @@ def capture_source(path: str | Path, session_id: str, *, binding: dict | None = 
             raise ValueError("native task binding is invalid")
         return dict(
             session_id=norm_session,
-            project_root=str(Path(scope).resolve()),
+            project_root=_strip_win_extended_prefix(str(Path(scope).resolve())),
             created_at=created,
-            transcript_path=str(selected),
+            transcript_path=_strip_win_extended_prefix(str(selected)),
         )
     raise ValueError("native task binding is required to establish project scope")
 
@@ -359,7 +380,7 @@ def read_material(
             stat = os.fstat(stream.fileno())
             anchor = stream.read(ANCHOR_BYTES)
             current = FileIdentity(
-                str(Path(path).resolve()),
+                _canonical_path(path),
                 stat.st_dev,
                 stat.st_ino,
                 stat.st_size,

@@ -48,13 +48,17 @@ def test_organizer_identity_passes_core_summarizer_validation():
     assert validated["fingerprint"] == ident["fingerprint"]
     assert "mindie-distill-request/1" in validated["capabilities"]
 
-    # Also verify isolated subprocess execution (`python -I organizer.py --identity`)
+    # Also verify isolated subprocess execution (`python -I -X utf8 organizer.py --identity`)
+    import os
+
     proc = subprocess.run(
-        [sys.executable, "-I", str(Path(organizer.__file__).resolve()), "--identity"],
+        [sys.executable, "-I", "-X", "utf8", str(Path(organizer.__file__).resolve()), "--identity"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=15.0,
         check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
     )
     assert proc.returncode == 0, proc.stderr
     sub_ident = summarizer.validate_identity(json.loads(proc.stdout))

@@ -10,6 +10,9 @@ registers and activates the Connector for discovered accounts.
   `setup.py` calls it for `install-wb` and `init --install-wb` only.
 - Account discovery reads WorkBuddy's own state files. Session identity is never
   taken from MCP tool arguments.
+- Installed copies of `hooks.json`, `mcp.json`, and `.mcp.json` pin the verified
+  runtime `python` path when present so Windows `WindowsApps` Store stubs cannot
+  intercept hook or MCP startup.
 
 [Timeouts & Locks]
 - Local copy and JSON writes only. No network calls and no runtime bootstrap.
@@ -23,11 +26,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import shutil
 import tempfile
 
-from paths import atomic_write_json, data_home, plugin_root, read_json, workbuddy_config_dir
+from paths import atomic_write_json, config_path, data_home, plugin_root, read_json, workbuddy_config_dir
 
 _TEXT_SUFFIXES = {".py", ".json", ".md", ".toml", ".svg", ".txt", ".yml", ".yaml"}
 
@@ -49,6 +53,56 @@ def _copy_plugin_tree(src_plugin: Path, dst_plugin: Path) -> None:
             continue
         if sub.is_file() and sub.suffix != ".pyc":
             _copy_lf_clean(sub, dst_plugin / sub.relative_to(src_plugin))
+
+
+def _resolve_verified_python(config: str | Path | None = None) -> str | None:
+    cfg = config_path(config)
+    if cfg.is_file():
+        try:
+            py = read_json(cfg).get("python")
+            if isinstance(py, str) and Path(py).is_file():
+                p = Path(py).expanduser()
+                return str(p.parent.resolve() / p.name)
+        except ValueError:
+            pass
+    wb_venv = data_home() / "wb-venv"
+    for cand in (wb_venv / "Scripts" / "python.exe", wb_venv / "bin" / "python"):
+        if cand.is_file():
+            return str(cand.parent.resolve() / cand.name)
+    return None
+
+
+def _pin_installed_launcher_python(dst_plugin: Path, python_exe: str | None) -> None:
+    if not python_exe:
+        return
+    hooks_file = dst_plugin / "hooks" / "hooks.json"
+    if hooks_file.is_file():
+        hooks_cfg = read_json(hooks_file)
+        hooks_map = hooks_cfg.get("hooks")
+        if isinstance(hooks_map, dict):
+            for entries in hooks_map.values():
+                if not isinstance(entries, list):
+                    continue
+                for group in entries:
+                    if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+                        continue
+                    for item in group["hooks"]:
+                        cmd = item.get("command") if isinstance(item, dict) else None
+                        if isinstance(cmd, str) and cmd.startswith(("python ", "python3 ")):
+                            rest = cmd.split(" ", 1)[1]
+                            item["command"] = f'"{python_exe}" {rest}'
+            atomic_write_json(hooks_file, hooks_cfg)
+    for mcp_name in ("mcp.json", ".mcp.json"):
+        mcp_file = dst_plugin / mcp_name
+        if not mcp_file.is_file():
+            continue
+        mcp_cfg = read_json(mcp_file)
+        servers = mcp_cfg.get("mcpServers")
+        if isinstance(servers, dict):
+            for srv in servers.values():
+                if isinstance(srv, dict) and srv.get("command") in {"python", "python3"}:
+                    srv["command"] = python_exe
+            atomic_write_json(mcp_file, mcp_cfg)
 
 
 def _discover_workbuddy_accounts(wb_root: Path) -> list[tuple[str, str]]:
@@ -119,6 +173,8 @@ def _is_temp_checkout_path(path: Path) -> bool:
         return True
     try:
         return Path(tempfile.gettempdir()).resolve() in path.resolve().parents
+    except TimeoutError:
+        raise
     except OSError:
         return False
 
@@ -148,12 +204,14 @@ def install_workbuddy_plugin(
     manifest = read_json(src_plugin / "plugin.json")
     version = str(manifest.get("version") or "0.1.0")
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    verified_py = _resolve_verified_python(config)
 
     # 1. Stage into ~/.workbuddy/plugins/cache/mindie-agent-marketplace/mindie-agent/<version>
     marketplace_name = "mindie-agent-marketplace"
     plugin_id = f"mindie-agent@{marketplace_name}"
     cache_dest = plugins_dir / "cache" / marketplace_name / "mindie-agent" / version
     _copy_plugin_tree(src_plugin, cache_dest)
+    _pin_installed_launcher_python(cache_dest, verified_py)
 
     # 2. Register marketplace in known_marketplaces.json
     known_mp_file = plugins_dir / "known_marketplaces.json"
@@ -184,8 +242,10 @@ def install_workbuddy_plugin(
     if connector_mp_root.is_dir():
         connector_dest = connector_mp_root / "connectors" / "mindie-agent"
         _copy_plugin_tree(src_plugin, connector_dest)
+        _pin_installed_launcher_python(connector_dest, verified_py)
         connector_cache_dest = plugins_dir / "cache" / connector_mp_name / "mindie-agent" / version
         _copy_plugin_tree(src_plugin, connector_cache_dest)
+        _pin_installed_launcher_python(connector_cache_dest, verified_py)
         plugins_map[connector_plugin_id] = _installed_record(connector_cache_dest, version, now_iso)
         mp_json_file = connector_mp_root / ".codebuddy-plugin" / "marketplace.json"
         if mp_json_file.is_file():
@@ -204,6 +264,8 @@ def install_workbuddy_plugin(
                     )
                     raw_mp["plugins"] = entries
                     atomic_write_json(mp_json_file, raw_mp)
+            except TimeoutError:
+                raise
             except (OSError, ValueError):
                 pass
 
@@ -249,5 +311,3 @@ def install_workbuddy_plugin(
         "settings_file": str(settings_file),
         "activated_accounts": activated_accounts,
     }
-
-

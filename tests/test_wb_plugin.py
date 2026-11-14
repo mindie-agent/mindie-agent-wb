@@ -12,7 +12,6 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = REPO_ROOT / "plugins" / "mindie-agent"
 SCRIPTS_DIR = PLUGIN_ROOT / "scripts"
-WORKBUDDY_CLI = Path("/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy")
 
 
 def test_plugin_manifests_and_connector_mcp_layout():
@@ -122,14 +121,15 @@ def test_product_and_harness_compatibility_contracts_and_module_invariants(monke
     for script in sorted(SCRIPTS_DIR.glob("*.py")):
         text = script.read_text(encoding="utf-8")
         lines = text.splitlines()
+        head30 = "\n".join(lines[:30])
         assert len(lines) < 800, f"{script.name} exceeds 800 lines ({len(lines)})"
         for section in required_sections:
-            assert section in text, f"{script.name} missing mandatory header section {section}"
+            assert section in head30, f"{script.name} missing mandatory header section {section} within top 30 lines"
 
     for fpath in REPO_ROOT.rglob("*"):
         if (
             fpath.is_file()
-            and fpath.suffix in {".py", ".json", ".md", ".toml", ".svg"}
+            and fpath.suffix in {".py", ".json", ".md", ".toml", ".svg", ".yml", ".yaml"}
             and not any(part in {".pytest_cache", ".venv", ".git"} for part in fpath.parts)
         ):
             raw = fpath.read_bytes()
@@ -201,18 +201,24 @@ def test_install_workbuddy_plugin_registers_marketplace_cache_and_connector(tmp_
     assert any(p.get("name") == "mindie-agent" and p.get("version") == plugin_version for p in mp_entries)
 
 
-@pytest.mark.skipif(not WORKBUDDY_CLI.is_file(), reason="WorkBuddy CLI not installed on this machine")
 def test_live_workbuddy_cli_plugin_validate():
+    import paths
+
+    cli = paths.workbuddy_cli_bin()
+    if not cli or not Path(cli).is_file():
+        pytest.skip("WorkBuddy CLI not installed on this machine")
     env = dict(os.environ)
     env["CODEBUDDY_FORCE_LITE_WB_BUNDLE"] = "1"
     env["DISABLE_TELEMETRY"] = "1"
     for target in (REPO_ROOT, PLUGIN_ROOT):
         proc = subprocess.run(
-            [str(WORKBUDDY_CLI), "plugin", "validate", str(target)],
+            [str(cli), "plugin", "validate", str(target)],
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=15.0,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
         )
         assert proc.returncode == 0, f"codebuddy plugin validate failed on {target}: {proc.stderr}\n{proc.stdout}"
         assert "Validation passed" in proc.stdout
@@ -264,7 +270,7 @@ def test_help_and_dry_run_do_not_bootstrap(monkeypatch, capsys):
             "registers_connector_if_marketplace_present": install,
             "profile_only": cmd in (None, "init") and not install,
         }
-        assert payload["uv"] == __import__("shutil").which("uv")
+        assert payload["uv"] == __import__("paths").which_native("uv")
 
 
 def test_abbreviated_dry_run_never_mounts_or_enables(monkeypatch, capsys, isolated_mindie_env):

@@ -28,10 +28,12 @@ envelope on stdout.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
 import shutil
+import ssl
 import sys
 import time
 import urllib.error
@@ -111,9 +113,63 @@ def _resolve_endpoint() -> dict | None:
             data = json.loads(ep_file.read_text(encoding="utf-8"))
             if isinstance(data, dict) and isinstance(data.get("url"), str):
                 return data
+        except TimeoutError:
+            raise
         except (OSError, ValueError):
             return None
     return None
+
+
+class _TrackedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *args, owner=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._owner = owner
+
+    def send(self, data):
+        super().send(data)
+        if self._owner is not None:
+            self._owner.transmitted = True
+
+
+class _TrackedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, owner=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._owner = owner
+        self._in_tunnel = False
+
+    def _tunnel(self):
+        self._in_tunnel = True
+        try:
+            return super()._tunnel()
+        finally:
+            self._in_tunnel = False
+
+    def send(self, data):
+        super().send(data)
+        if self._owner is not None and not self._in_tunnel:
+            self._owner.transmitted = True
+
+
+class _TrackedHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, owner):
+        super().__init__()
+        self._owner = owner
+
+    def http_open(self, req):
+        return self.do_open(lambda host, **kw: _TrackedHTTPConnection(host, owner=self._owner, **kw), req)
+
+
+class _TrackedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, owner):
+        super().__init__()
+        self._owner = owner
+
+    def https_open(self, req):
+        return self.do_open(
+            lambda host, **kw: _TrackedHTTPSConnection(host, owner=self._owner, **kw),
+            req,
+            context=self._context,
+        )
 
 
 class NativeSummaryModel:
@@ -149,22 +205,27 @@ class NativeSummaryModel:
                 ).encode("utf-8")
                 req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
                 budget = native_timeout(max_seconds=120.0)
-                opener = (
-                    urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                    if ("127.0.0.1" in url or "localhost" in url)
-                    else urllib.request.build_opener()
-                )
+                handlers: list = [_TrackedHTTPHandler(self), _TrackedHTTPSHandler(self)]
+                if "127.0.0.1" in url or "localhost" in url:
+                    handlers.insert(0, urllib.request.ProxyHandler({}))
+                opener = urllib.request.build_opener(*handlers)
                 try:
-                    self.transmitted = True
                     with opener.open(req, timeout=budget) as resp:
+                        self.transmitted = True
                         raw_bytes = resp.read(summarizer.MAX_RESPONSE_BYTES * 2)
                 except urllib.error.HTTPError as exc:
+                    self.transmitted = True
                     raise TimeoutError(f"summary endpoint HTTP {exc.code} after transmission") from exc
+                except TimeoutError:
+                    raise
                 except urllib.error.URLError as exc:
-                    if isinstance(getattr(exc, "reason", None), ConnectionRefusedError):
-                        self.transmitted = False
-                        raise NativeStartError("summary endpoint connection refused") from exc
+                    if not self.transmitted:
+                        raise NativeStartError(f"summary endpoint unreachable before send: {exc}") from exc
                     raise TimeoutError("summary endpoint request failed after transmission") from exc
+                except (ssl.SSLError, ConnectionError, OSError, http.client.HTTPException) as exc:
+                    if not self.transmitted:
+                        raise NativeStartError(f"summary endpoint transport failed before send: {exc}") from exc
+                    raise TimeoutError(f"summary endpoint stream failed after transmission: {exc}") from exc
 
                 envelope = json.loads(raw_bytes.decode("utf-8"))
                 if not isinstance(envelope, dict):
@@ -220,6 +281,8 @@ class NativeSummaryModel:
             if not core_owned:
                 try:
                     shutil.rmtree(directory)
+                except TimeoutError:
+                    raise
                 except OSError:
                     self.cleanup_failed = True
 

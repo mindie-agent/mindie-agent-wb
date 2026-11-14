@@ -38,6 +38,7 @@ from identity import require_session
 from paths import config_path, engine_config_path, read_json
 
 KNOWLEDGE_RPC_TIMEOUT = 30.0
+MAX_INPUT_BYTES = 1024 * 1024
 
 
 class KnowledgeInactive(ValueError):
@@ -346,6 +347,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--session", default=None, help="WorkBuddy conversationId / session_id")
     parser.add_argument("--json", dest="json_arg", default=None, help="Inline JSON object arguments")
+    parser.add_argument("--input-file", dest="input_file", default=None, help="UTF-8 JSON file containing tool arguments")
     parsed = parser.parse_args(argv)
 
     try:
@@ -376,7 +378,21 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.buffer.write((json.dumps(out, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"))
             return 0
 
-        raw_in = parsed.json_arg if parsed.json_arg is not None else sys.stdin.read()
+        if parsed.input_file is not None:
+            with Path(parsed.input_file).open("rb") as stream:
+                raw_bytes = stream.read(MAX_INPUT_BYTES + 1)
+            if len(raw_bytes) > MAX_INPUT_BYTES:
+                raise ValueError("knowledge arguments exceed 1 MiB byte budget")
+            raw_in = raw_bytes.decode("utf-8-sig")
+        elif parsed.json_arg is not None:
+            if len(parsed.json_arg.encode("utf-8")) > MAX_INPUT_BYTES:
+                raise ValueError("knowledge arguments exceed 1 MiB byte budget")
+            raw_in = parsed.json_arg.lstrip("\ufeff")
+        else:
+            raw_bytes = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
+            if len(raw_bytes) > MAX_INPUT_BYTES:
+                raise ValueError("knowledge arguments exceed 1 MiB byte budget")
+            raw_in = raw_bytes.decode("utf-8-sig")
         args = json.loads(raw_in) if raw_in and raw_in.strip() else {}
         result = execute_knowledge_tool(parsed.tool, args, session=session)
         is_error = False

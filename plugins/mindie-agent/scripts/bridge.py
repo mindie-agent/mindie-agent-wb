@@ -16,8 +16,8 @@ turn-end transcript capture.
   `session_id` has an active lease and community sharing is enabled.
 
 [Timeouts & Locks]
-- Bounded by `mindie_launch.py`'s `10.0s` hook budget; spawns at most one
-  detached background component-update check (`300s` throttle).
+- Bounded by `mindie_launch.py`'s `8.0s` hook execution budget (`10.0s` total);
+  spawns at most one detached background component-update check (`300s` throttle).
 
 [Side-Effect Policy]
 - Updates `admission.sqlite3` on explicit `/mindie-agent` gesture, writes one-shot
@@ -82,6 +82,8 @@ def handle_session_start(event: dict) -> dict:
             error = recorded.get("error") if isinstance(recorded, dict) else None
             if isinstance(error, str) and error.strip():
                 detail = error
+        except TimeoutError:
+            raise
         except (OSError, ValueError):
             pass
         return dict(
@@ -158,7 +160,9 @@ def handle_user_prompt(event: dict, *, hook_event_name: str = "UserPromptSubmit"
     lease_info = activate(session, workspace, domain=domain)
     cli_script = plugin_root() / "scripts" / "knowledge_cli.py"
     adapter = read_json(cfg_file)
-    py_exe = adapter.get("python") or sys.executable
+    raw_py = adapter.get("python") or sys.executable
+    py_exe = f'"{raw_py}"' if isinstance(raw_py, str) and raw_py else '"python"'
+    cli_quoted = f'"{cli_script}"'
     context_msg = (
         f"[MindIE Agent Activated] Session `{session}` is bound to workspace `{workspace}` "
         f"(domain: `{lease_info.get('domain', adapter.get('domain', 'vllm-ascend'))}`). "
@@ -166,7 +170,8 @@ def handle_user_prompt(event: dict, *, hook_event_name: str = "UserPromptSubmit"
         f"(`mcp__mindie-knowledge__knowledge_query`, `mcp__mindie-knowledge__knowledge_explain`, "
         f"`mcp__mindie-knowledge__knowledge_feedback`, `mcp__mindie-knowledge__knowledge_distill`, "
         f"`mcp__mindie-knowledge__knowledge_sync`, `mcp__mindie-knowledge__mindie_entry`) "
-        f"or via CLI: `WB_CONVERSATION_ID={session} {py_exe} -I {cli_script} <tool_name>`."
+        f"or via CLI in PowerShell (`& {py_exe} -I -X utf8 {cli_quoted} --session \"{session}\" <tool_name> --input-file <json_file>`) "
+        f"or cmd.exe / POSIX shells (`{py_exe} -I -X utf8 {cli_quoted} --session \"{session}\" <tool_name> --input-file <json_file>`)."
     )
     return dict(
         hookSpecificOutput=dict(

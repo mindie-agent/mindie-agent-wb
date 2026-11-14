@@ -13,6 +13,8 @@ requiring a new `mindie-agent-wb` plugin release.
 - Atomic Profile Rebinding: `wb.json` and `wb.engine.json` are updated via
   `atomic_write_json` (`os.replace()`) only after the candidate generation passes
   `runtime_inventory` lock and VCS receipt verification.
+- Background spawn writes `in_progress` with `pid` only after `Popen` returns;
+  dead/stale `in_progress` PIDs are reclaimed instead of wedging checks.
 - Never activates a session lease.
 
 [Timeouts & Locks]
@@ -61,6 +63,83 @@ UPDATE_CHECK_INTERVAL = 300.0
 UPDATE_FAILURE_BACKOFF = 60.0
 
 
+def _pid_running(pid) -> bool:
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    if os.name == "nt":
+        return _pid_running_windows(int(pid))
+    try:
+        reaped, _status = os.waitpid(pid, os.WNOHANG)
+        if reaped == pid:
+            return False
+    except TimeoutError:
+        raise
+    except (ChildProcessError, OSError):
+        pass
+    try:
+        os.kill(pid, 0)
+    except TimeoutError:
+        raise
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _pid_running_windows(pid: int) -> bool:
+    """Return whether `pid` is alive. Query failure must not raise or fake 'dead'."""
+    import ctypes
+    from ctypes import wintypes
+
+    error_access_denied = 5
+    process_query_limited_information = 0x1000
+    process_query_information = 0x0400
+    still_active = 259
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            handle = kernel32.OpenProcess(process_query_information, False, pid)
+        if not handle:
+            return ctypes.get_last_error() == error_access_denied
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            return int(code.value) == still_active
+        finally:
+            kernel32.CloseHandle(handle)
+    except (TimeoutError, OSError):
+        return True
+    except Exception:
+        return False
+
+
+def _stop_untracked_updater(proc) -> None:
+    if proc is None:
+        return
+    from bounded import _kill_process_tree
+
+    try:
+        _kill_process_tree(proc, None, wait_timeout=0.5)
+    except TimeoutError:
+        raise
+    except OSError as exc:
+        print(
+            f"MindIE WorkBuddy untracked updater cleanup failed: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+
+
 def trigger_background_update_if_due(*, config: str | Path | None = None) -> bool | None:
     """Spawn a non-blocking background `component_update.py` check if the interval has elapsed.
 
@@ -69,20 +148,30 @@ def trigger_background_update_if_due(*, config: str | Path | None = None) -> boo
     """
     if os.environ.get("MINDIE_CONFIG_HOME") is not None:
         return False
+    status_file = data_home() / "wb-component-update-status.json"
+    now = time.time()
     try:
         cfg_file = config_path(config)
         if not cfg_file.is_file():
             return False
-        status_file = data_home() / "wb-component-update-status.json"
-        now = time.time()
         if status_file.is_file():
             data = read_json(status_file)
             checked = float(data.get("checked_at") or 0.0)
             st = data.get("status")
-            interval = UPDATE_FAILURE_BACKOFF if st == "failed" else UPDATE_CHECK_INTERVAL
-            if now - checked < interval:
+            if st == "in_progress":
+                rec_pid = data.get("pid")
+                if rec_pid is not None and _pid_running(rec_pid):
+                    return False
+                if rec_pid is None and now - checked < UPDATE_CHECK_INTERVAL:
+                    return False
+                print(
+                    "MindIE WorkBuddy background updater pid is not running; reclaiming leftover in_progress",
+                    file=sys.stderr,
+                )
+            elif st == "failed" and now - checked < UPDATE_FAILURE_BACKOFF:
                 return False
-        atomic_write_json(status_file, {"checked_at": now, "status": "in_progress"})
+            elif st != "failed" and now - checked < UPDATE_CHECK_INTERVAL:
+                return False
         adapter = read_json(cfg_file)
         py_exe = adapter.get("python") or sys.executable
         env = apply_enterprise_transport_env(dict(os.environ))
@@ -104,26 +193,49 @@ def trigger_background_update_if_due(*, config: str | Path | None = None) -> boo
             )
         else:
             kwargs["start_new_session"] = True
-        subprocess.Popen([str(py_exe), "-I", str(Path(__file__).resolve()), "--config", str(cfg_file)], **kwargs)
-        return True
+        proc = subprocess.Popen(
+            [str(py_exe), "-I", "-X", "utf8", str(Path(__file__).resolve()), "--config", str(cfg_file)],
+            **kwargs,
+        )
     except TimeoutError as exc:
-        _record_background_update_failure(exc)
+        _record_background_update_failure(exc, status_file=status_file, checked_at=now)
         raise
     except Exception as exc:
-        _record_background_update_failure(exc)
+        _record_background_update_failure(exc, status_file=status_file, checked_at=now)
         print(
             f"MindIE WorkBuddy background component update failed to start: {type(exc).__name__}: {exc}",
             file=sys.stderr,
         )
         return None
+    status_record: dict = {"checked_at": now, "status": "in_progress"}
+    proc_pid = getattr(proc, "pid", None)
+    if isinstance(proc_pid, int) and not isinstance(proc_pid, bool):
+        status_record["pid"] = int(proc_pid)
+    try:
+        atomic_write_json(status_file, status_record)
+    except TimeoutError as write_exc:
+        _stop_untracked_updater(proc)
+        _record_background_update_failure(write_exc, status_file=status_file, checked_at=now)
+        raise
+    except OSError as write_exc:
+        _stop_untracked_updater(proc)
+        _record_background_update_failure(write_exc, status_file=status_file, checked_at=now)
+        return None
+    return True
 
 
-def _record_background_update_failure(exc: BaseException) -> None:
+def _record_background_update_failure(
+    exc: BaseException,
+    *,
+    status_file: Path | None = None,
+    checked_at: float | None = None,
+) -> None:
+    target = status_file or (data_home() / "wb-component-update-status.json")
     try:
         atomic_write_json(
-            data_home() / "wb-component-update-status.json",
+            target,
             {
-                "checked_at": time.time(),
+                "checked_at": time.time() if checked_at is None else checked_at,
                 "status": "failed",
                 "error": f"{type(exc).__name__}: {exc}",
             },
@@ -150,7 +262,7 @@ def compatible_runtime(python: str, *, source=None, config=None, timeout: float 
         budget = min(15.0, deadline - time.monotonic())
         if budget <= 0:
             raise TimeoutError("runtime compatibility probe exceeded its budget")
-        return bounded_run([str(interpreter), "-I", "-c", imports], "", timeout=budget).returncode == 0
+        return bounded_run([str(interpreter), "-I", "-X", "utf8", "-c", imports], "", timeout=budget).returncode == 0
 
     if probe(python):
         return _norm_python_path(python)
@@ -159,7 +271,7 @@ def compatible_runtime(python: str, *, source=None, config=None, timeout: float 
         raise TimeoutError("runtime preparation has no remaining build budget")
     # The configured interpreter may be older than this plugin. Its existing
     # component builder prepares the new baseline in a separate generation.
-    command = [str(python), "-I", str(Path(__file__).resolve()), "--prepare-only",
+    command = [str(python), "-I", "-X", "utf8", str(Path(__file__).resolve()), "--prepare-only",
                "--python", str(python), "--source", str(source or repo_root(config)),
                "--config", str(config_path(config)), "--timeout", str(remaining - 20.0)]
     result = bounded_run(command, "", timeout=remaining - 15.0,
@@ -255,7 +367,11 @@ def check(
         ensure_default_profile(config=cfg_file)
     adapter = read_json(cfg_file)
     eng_file = engine_config_path(cfg_file)
-    current_python = adapter.get("python") or sys.executable
+    cfg_py = adapter.get("python")
+    cfg_py_norm = cfg_py.replace("\\", "/") if isinstance(cfg_py, str) else ""
+    if cfg_py_norm and "/uv/python/" in cfg_py_norm:
+        cfg_py = None
+    current_python = cfg_py or sys.executable
 
     status_file = data_home() / "wb-component-update-status.json"
     try:
@@ -305,7 +421,7 @@ def check(
         try:
             if eng_file.is_file():
                 eng_payload = read_json(eng_file)
-                eng_payload["summary_command"] = [new_python, "-I", str(HERE / "organizer.py")]
+                eng_payload["summary_command"] = [new_python, "-I", "-X", "utf8", str(HERE / "organizer.py")]
                 atomic_write_json(eng_file, eng_payload)
         except (TimeoutError, OSError, ValueError, TypeError) as exc:
             post_promote_warn = f"{type(exc).__name__}: {exc}"

@@ -390,8 +390,17 @@ def _file_url_to_path(url: str) -> Path | None:
     if not isinstance(url, str) or not url.startswith("file://"):
         return None
     from urllib.parse import unquote, urlparse
-    raw = unquote(urlparse(url).path or "")
-    return Path(raw[1:] if re.match(r"^/[A-Za-z]:/", raw) else raw) if raw else None
+
+    parsed = urlparse(url)
+    host = unquote(parsed.netloc or "")
+    raw_path = unquote(parsed.path or "")
+    if host and host.lower() != "localhost":
+        if os.name == "nt":
+            return Path("\\\\" + host + raw_path.replace("/", "\\"))
+        return Path(f"//{host}{raw_path}")
+    if not raw_path:
+        return None
+    return Path(raw_path[1:] if re.match(r"^/[A-Za-z]:/", raw_path) else raw_path)
 
 
 def _inspect_dist_info_full(site_dir: Path, dist_norm: str) -> tuple[str | None, str | None, Path | None]:
