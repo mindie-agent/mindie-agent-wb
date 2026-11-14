@@ -61,6 +61,8 @@ from paths import (
 
 UPDATE_CHECK_INTERVAL = 300.0
 UPDATE_FAILURE_BACKOFF = 60.0
+UPDATE_MAX_IN_PROGRESS_AGE = 600.0
+UPDATE_SPAWN_CLAIM_GRACE = 5.0
 
 
 def _pid_running(pid) -> bool:
@@ -118,7 +120,9 @@ def _pid_running_windows(pid: int) -> bool:
             return int(code.value) == still_active
         finally:
             kernel32.CloseHandle(handle)
-    except (TimeoutError, OSError):
+    except TimeoutError:
+        raise
+    except OSError:
         return True
     except Exception:
         return False
@@ -160,12 +164,13 @@ def trigger_background_update_if_due(*, config: str | Path | None = None) -> boo
             st = data.get("status")
             if st == "in_progress":
                 rec_pid = data.get("pid")
-                if rec_pid is not None and _pid_running(rec_pid):
+                age = now - checked
+                if age < UPDATE_MAX_IN_PROGRESS_AGE and rec_pid is not None and _pid_running(rec_pid):
                     return False
-                if rec_pid is None and now - checked < UPDATE_CHECK_INTERVAL:
+                if rec_pid is None and 0.0 <= age < UPDATE_SPAWN_CLAIM_GRACE:
                     return False
                 print(
-                    "MindIE WorkBuddy background updater pid is not running; reclaiming leftover in_progress",
+                    "MindIE WorkBuddy background updater pid is stale or not running; reclaiming leftover in_progress",
                     file=sys.stderr,
                 )
             elif st == "failed" and now - checked < UPDATE_FAILURE_BACKOFF:
@@ -174,7 +179,10 @@ def trigger_background_update_if_due(*, config: str | Path | None = None) -> boo
                 return False
         adapter = read_json(cfg_file)
         py_exe = adapter.get("python") or sys.executable
+        run_id = os.urandom(8).hex()
+        atomic_write_json(status_file, {"checked_at": now, "status": "in_progress", "run_id": run_id})
         env = apply_enterprise_transport_env(dict(os.environ))
+        env["MINDIE_WB_UPDATE_RUN_ID"] = run_id
         kwargs: dict = dict(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -207,17 +215,19 @@ def trigger_background_update_if_due(*, config: str | Path | None = None) -> boo
             file=sys.stderr,
         )
         return None
-    status_record: dict = {"checked_at": now, "status": "in_progress"}
+    status_record: dict = {"checked_at": now, "status": "in_progress", "run_id": run_id}
     proc_pid = getattr(proc, "pid", None)
     if isinstance(proc_pid, int) and not isinstance(proc_pid, bool):
         status_record["pid"] = int(proc_pid)
     try:
-        atomic_write_json(status_file, status_record)
+        cur = read_json(status_file) if status_file.is_file() else {}
+        if cur.get("run_id") == run_id and cur.get("status") == "in_progress":
+            atomic_write_json(status_file, status_record)
     except TimeoutError as write_exc:
         _stop_untracked_updater(proc)
         _record_background_update_failure(write_exc, status_file=status_file, checked_at=now)
         raise
-    except OSError as write_exc:
+    except (OSError, ValueError) as write_exc:
         _stop_untracked_updater(proc)
         _record_background_update_failure(write_exc, status_file=status_file, checked_at=now)
         return None
@@ -500,6 +510,8 @@ def check(
             "status": status,
             "python": active_python,
         }
+        if run_id_env := os.environ.get("MINDIE_WB_UPDATE_RUN_ID"):
+            status_payload["run_id"] = run_id_env
         if result.get("receipt_unconfirmed"):
             status_payload["receipt_warning"] = result.get("receipt_warning")
             status_payload["receipt_unconfirmed"] = True

@@ -48,7 +48,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from bounded import run as bounded_run
-from paths import state_dir, workbuddy_cli_bin
+from paths import state_dir, workbuddy_cli_argv, workbuddy_cli_bin
 
 SUMMARY_MODEL = os.environ.get("MINDIE_SUMMARY_MODEL") or "deepseek-v3"
 SUMMARY_EFFORT = "low"
@@ -241,8 +241,8 @@ class NativeSummaryModel:
                 self.raw_result = text
                 return text
 
-            cli_bin = workbuddy_cli_bin()
-            if cli_bin is None:
+            cli_argv = workbuddy_cli_argv()
+            if not cli_argv:
                 raise NativeStartError("WorkBuddy CLI binary is not available and no summary endpoint is configured")
             env = dict(os.environ)
             env["CODEBUDDY_FORCE_LITE_WB_BUNDLE"] = "1"
@@ -253,7 +253,7 @@ class NativeSummaryModel:
             self.transmitted = True
             proc = bounded_run(
                 [
-                    cli_bin,
+                    *cli_argv,
                     "-p",
                     prompt_text,
                     "--output-format",

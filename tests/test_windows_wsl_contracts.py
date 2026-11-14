@@ -25,6 +25,10 @@ import wb_transcript
 SESSION_ID = "454c6ee9-afea-47be-8188-abb9c7fb1f26"
 
 
+def _nt_os() -> types.SimpleNamespace:
+    return types.SimpleNamespace(**{**os.__dict__, "name": "nt"})
+
+
 def test_which_native_filters_wsl_mnt_c_shims_and_windowsapps_stubs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -32,12 +36,17 @@ def test_which_native_filters_wsl_mnt_c_shims_and_windowsapps_stubs(
     linux_bin = tmp_path / "usr_bin"
     mnt_c.mkdir()
     linux_bin.mkdir()
+    # CRLF Windows npm/batch shim on /mnt/c is rejected on WSL2
     win_uv = mnt_c / "uv"
-    win_uv.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    win_uv.write_bytes(b"#!/bin/sh\r\nexit 0\r\n")
     win_uv.chmod(0o755)
     linux_uv = linux_bin / "uv"
-    linux_uv.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    linux_uv.write_bytes(b"#!/bin/sh\nexit 0\n")
     linux_uv.chmod(0o755)
+    # Genuine Linux LF script / ELF binary on /mnt/c is preserved when no Windows shim marker exists
+    mnt_linux_tool = mnt_c / "linux-only-tool"
+    mnt_linux_tool.write_bytes(b"\x7fELF-linux-binary")
+    mnt_linux_tool.chmod(0o755)
 
     monkeypatch.setattr(paths, "_is_wsl", lambda: True)
     monkeypatch.setattr(paths, "_WSL_MOUNT_RE", __import__("re").compile(f"^{__import__('re').escape(str(mnt_c))}(?:[/\\\\]|$)"))
@@ -53,8 +62,9 @@ def test_which_native_filters_wsl_mnt_c_shims_and_windowsapps_stubs(
     search = os.pathsep.join([str(mnt_c), str(linux_bin)])
     assert paths.which_native("uv", path=search) == str(linux_uv)
     assert paths.which_native("uv", path=str(mnt_c)) is None
+    assert paths.which_native("linux-only-tool", path=str(mnt_c)) == str(mnt_linux_tool)
 
-    # WindowsApps 0-byte Store execution alias stub is rejected on Windows
+    # WindowsApps 0-byte Store execution alias stub is rejected on Windows without mutating global os.name
     win_apps = tmp_path / "WindowsApps"
     win_apps.mkdir()
     zero_stub = win_apps / "python.exe"
@@ -64,11 +74,26 @@ def test_which_native_filters_wsl_mnt_c_shims_and_windowsapps_stubs(
     real_winget.write_bytes(b"MZ-valid-binary")
 
     monkeypatch.setattr(paths, "_is_wsl", lambda: False)
-    monkeypatch.setattr(paths.os, "name", "nt")
+    monkeypatch.setattr(paths, "os", _nt_os())
     monkeypatch.setattr(paths.shutil, "which", lambda cmd, path=None: str(zero_stub) if cmd == "python" else None)
     monkeypatch.setattr(paths, "_win32_tool_candidates", lambda cmd: [real_winget] if cmd == "uv" else [])
     assert paths.which_native("python", path=str(win_apps)) is None
     assert paths.which_native("uv") == str(real_winget)
+
+    # Windows npm `.cmd` wrapper unwraps to `[node.exe, cli.js]` so `cmd.exe` never parses prompt metacharacters
+    npm_dir = tmp_path / "npm_bin"
+    pkg_dir = npm_dir / "node_modules" / "codebuddy" / "bin"
+    pkg_dir.mkdir(parents=True)
+    node_exe = npm_dir / "node.exe"
+    node_exe.write_bytes(b"MZ-node")
+    cli_js = pkg_dir / "cli.js"
+    cli_js.write_text("console.log('ok')\n", encoding="utf-8")
+    cb_cmd = npm_dir / "codebuddy.cmd"
+    cb_cmd.write_text('@ECHO off\r\n"%~dp0\\node.exe"  "%~dp0\\node_modules\\codebuddy\\bin\\cli.js" %*\r\n', encoding="utf-8")
+    assert paths._unwrap_cli_argv(cb_cmd) == [str(node_exe.resolve()), str(cli_js.resolve())]
+    opaque_cmd = npm_dir / "opaque.cmd"
+    opaque_cmd.write_text("@echo off\r\necho unsafe\r\n", encoding="utf-8")
+    assert paths._unwrap_cli_argv(opaque_cmd) is None
 
     # Smart App Control (WinError 4551): Windows component `.exe` trampolines dispatch via signed `python -I -X utf8 -m`
     import mcp_server
@@ -76,7 +101,7 @@ def test_which_native_filters_wsl_mnt_c_shims_and_windowsapps_stubs(
     fake_dbg_exe = tmp_path / "Scripts" / "mindie-debugger.exe"
     fake_dbg_exe.parent.mkdir()
     fake_dbg_exe.write_bytes(b"MZ-unsigned-trampoline")
-    monkeypatch.setattr(mcp_server.os, "name", "nt")
+    monkeypatch.setattr(mcp_server, "os", _nt_os())
     monkeypatch.setattr(mcp_server, "which_native", lambda cmd, path=None: str(fake_dbg_exe))
     assert mcp_server._resolve_component_argv({"python": r"C:\Python\python.exe"}, "debugger") == [
         r"C:\Python\python.exe",
@@ -209,13 +234,13 @@ def test_organizer_proxy_tunnel_vs_post_send_transmission_honesty(monkeypatch: p
 def test_unc_file_urls_and_extended_unc_transcript_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setattr(diagnostic_support.os, "name", "nt")
+    monkeypatch.setattr(diagnostic_support, "os", _nt_os())
     unc_path = diagnostic_support._file_url_to_path("file://wsl.localhost/Ubuntu/home/dev/repo")
     assert str(unc_path) in {r"\\wsl.localhost\Ubuntu\home\dev\repo", "//wsl.localhost/Ubuntu/home/dev/repo"}
     drive_path = diagnostic_support._file_url_to_path("file:///C:/Users/dev/code/debugger")
     assert str(drive_path).replace("\\", "/") == "C:/Users/dev/code/debugger"
 
-    monkeypatch.setattr(wb_transcript.os, "name", "nt")
+    monkeypatch.setattr(wb_transcript, "os", _nt_os())
     assert wb_transcript._strip_win_extended_prefix(r"\\?\UNC\server\share\proj\a.jsonl") == r"\\server\share\proj\a.jsonl"
     assert wb_transcript._strip_win_extended_prefix(r"\\?\C:\Users\dev\a.jsonl") == r"C:\Users\dev\a.jsonl"
 
@@ -241,7 +266,7 @@ def test_unc_file_urls_and_extended_unc_transcript_identity(
 
 
 def test_bounded_run_kills_grandchild_holding_stdout_pipe_and_tracks_taskkill_exit(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     started = time.monotonic()
     with pytest.raises(TimeoutError):
@@ -274,7 +299,7 @@ def test_bounded_run_kills_grandchild_holding_stdout_pipe_and_tracks_taskkill_ex
             return 0
 
     fake_proc = _FakePopen()
-    monkeypatch.setattr(bounded.os, "name", "nt")
+    monkeypatch.setattr(bounded, "os", _nt_os())
     monkeypatch.setattr(bounded, "_STDLIB_POPEN_CLS", _FakePopen)
     monkeypatch.setattr(
         bounded,
@@ -289,3 +314,31 @@ def test_bounded_run_kills_grandchild_holding_stdout_pipe_and_tracks_taskkill_ex
         lambda *_a, **_k: types.SimpleNamespace(wait=lambda timeout=None: 128, kill=lambda: None),
     )
     assert bounded._kill_process_tree(fake_proc, job_handle=None, wait_timeout=1.0) is False
+
+    # Verify argparse-compatible `--timeout` parsing and background update fast-child race guard
+    import component_update
+    import mindie_launch
+
+    assert mindie_launch._parse_cli_timeout(["update", "--timeout", "5", "--timeout", "540"]) == 540.0
+    assert mindie_launch._parse_cli_timeout(["update", "--time", "600"]) == 600.0
+
+    monkeypatch.delenv("MINDIE_CONFIG_HOME", raising=False)
+    cfg = tmp_path / "wb_cfg" / "wb.json"
+    cfg.parent.mkdir()
+    cfg.write_text(json.dumps({"python": sys.executable}), encoding="utf-8")
+    data_dir = tmp_path / "wb_data"
+    data_dir.mkdir()
+    monkeypatch.setattr(component_update, "data_home", lambda: data_dir)
+    status_file = data_dir / "wb-component-update-status.json"
+
+    def _fast_child_popen(_cmd, **kwargs):
+        rid = kwargs["env"]["MINDIE_WB_UPDATE_RUN_ID"]
+        paths.atomic_write_json(
+            status_file,
+            {"checked_at": time.time(), "status": "up_to_date", "run_id": rid},
+        )
+        return types.SimpleNamespace(pid=43210)
+
+    monkeypatch.setattr(component_update.subprocess, "Popen", _fast_child_popen)
+    assert component_update.trigger_background_update_if_due(config=cfg) is True
+    assert json.loads(status_file.read_text(encoding="utf-8"))["status"] == "up_to_date"

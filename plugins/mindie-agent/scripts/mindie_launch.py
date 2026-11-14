@@ -145,20 +145,15 @@ def _reexec_stdio(stream):
 
 
 def _parse_cli_timeout(argv: list[str]) -> float | None:
-    for index, token in enumerate(argv):
-        raw = None
-        if token == "--timeout" and index + 1 < len(argv):
-            raw = argv[index + 1]
-        elif token.startswith("--timeout="):
-            raw = token.split("=", 1)[1]
-        if raw is None:
-            continue
-        try:
-            value = float(raw)
-        except ValueError:
-            return None
-        return value if value > 0 else None
-    return None
+    import argparse
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--timeout", type=float, default=None)
+    try:
+        known, _ = parser.parse_known_args(argv[1:] if argv else [])
+    except (SystemExit, ValueError):
+        return None
+    return float(known.timeout) if known.timeout is not None and known.timeout > 0 else None
 
 
 def _timeout_role_budget(role: str, argv: list[str] | None = None) -> float | None:
@@ -230,6 +225,10 @@ def _reexec(target_py: str, target_script: Path, argv: list[str], env: dict) -> 
         job = None
         if argv[0] == "hook":
             return _emit_hook_failure(argv[1] if len(argv) > 1 else "session-start", exc)
+        raise
+    except BaseException:
+        _kill_process_tree(proc, job, wait_timeout=min(0.5, HOOK_CLEANUP_GRACE))
+        job = None
         raise
     finally:
         if job is not None:
