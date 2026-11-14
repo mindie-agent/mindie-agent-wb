@@ -10,6 +10,8 @@ active WorkBuddy configuration directory (`~/.workbuddy`).
 - All MindIE runtime state, session leases, and SQLite databases live under
   MindIE-owned directories (`config_home`, `data_home`, `state_dir`).
 - Atomic file writes use `os.replace()` on regular files in the same directory.
+- `which_native` filters Windows `/mnt/<drive>` shims on WSL2 and 0-byte
+  `WindowsApps` Store stubs on Windows.
 
 [Timeouts & Locks]
 - Pure path resolution and bounded local JSON reads (`<= 64 KiB`); no network
@@ -25,9 +27,89 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
+import shutil
+import sys
 import tempfile
 
 MAX_CONFIG_BYTES = 65536
+_WSL_MOUNT_RE = re.compile(r"^/mnt/[a-zA-Z](?:/|$)")
+
+
+def _is_wsl() -> bool:
+    return sys.platform == "linux" and (
+        "WSL_DISTRO_NAME" in os.environ or Path("/proc/sys/fs/binfmt_misc/WSLInterop").exists()
+    )
+
+
+def _win32_tool_candidates(cmd: str) -> list[Path]:
+    base = cmd.lower().removesuffix(".exe").removesuffix(".cmd")
+    home = Path.home()
+    local_app = Path(os.environ.get("LOCALAPPDATA") or (home / "AppData" / "Local"))
+    prog_files = Path(os.environ.get("ProgramFiles") or r"C:\Program Files")
+    out: list[Path] = []
+    if base == "uv":
+        out.extend([home / ".local" / "bin" / "uv.exe", local_app / "Microsoft" / "WinGet" / "Links" / "uv.exe"])
+        winget_pkgs = local_app / "Microsoft" / "WinGet" / "Packages"
+        if winget_pkgs.is_dir():
+            out.extend(sorted(winget_pkgs.glob("astral-sh.uv_*/uv.exe")))
+    elif base == "git":
+        out.extend([prog_files / "Git" / "cmd" / "git.exe", local_app / "Programs" / "Git" / "cmd" / "git.exe"])
+    elif base == "gh":
+        out.extend([prog_files / "GitHub CLI" / "gh.exe", local_app / "Programs" / "GitHub CLI" / "gh.exe"])
+    elif base == "gitleaks":
+        out.append(local_app / "Microsoft" / "WinGet" / "Links" / "gitleaks.exe")
+        winget_pkgs = local_app / "Microsoft" / "WinGet" / "Packages"
+        if winget_pkgs.is_dir():
+            out.extend(sorted(winget_pkgs.glob("Gitleaks.Gitleaks_*/gitleaks.exe")))
+    return out
+
+
+def _is_wsl_windows_shim(path_str: str) -> bool:
+    lower = path_str.lower()
+    if lower.endswith((".exe", ".cmd", ".bat", ".ps1", ".com")):
+        return True
+    if not _WSL_MOUNT_RE.match(path_str):
+        return False
+    try:
+        with Path(path_str).open("rb") as fh:
+            head = fh.read(128)
+    except TimeoutError:
+        raise
+    except OSError:
+        return True
+    if head.startswith(b"MZ"):
+        return True
+    if head.startswith(b"#!") and b"\r" in head.splitlines(True)[0]:
+        return True
+    return False
+
+
+def which_native(cmd: str, path: str | None = None) -> str | None:
+    """Resolve `cmd` without picking Windows PE/CRLF shims on WSL2 or WindowsApps 0-byte stubs."""
+    search_path = os.environ.get("PATH", "") if path is None else path
+    if _is_wsl():
+        for entry in search_path.split(os.pathsep):
+            if not entry:
+                continue
+            found = shutil.which(cmd, path=entry)
+            if found and not _is_wsl_windows_shim(found):
+                return found
+        return None
+    found = shutil.which(cmd, path=search_path)
+    if os.name == "nt" and found:
+        try:
+            if "windowsapps" in found.replace("/", "\\").lower() and Path(found).stat().st_size == 0:
+                found = None
+        except TimeoutError:
+            raise
+        except OSError:
+            found = None
+    if os.name == "nt" and found is None and path is None:
+        for cand in _win32_tool_candidates(cmd):
+            if cand.is_file():
+                return str(cand)
+    return found
 
 
 def plugin_root() -> Path:
@@ -200,19 +282,81 @@ def workbuddy_config_dir(config: str | Path | None = None) -> Path:
     return (Path.home() / ".workbuddy").resolve()
 
 
-def workbuddy_cli_bin() -> str | None:
-    """Discover the bundled WorkBuddy / CodeBuddy CLI binary path."""
+_NPM_SHIM_JS_RE = re.compile(r'"%(?:~dp0|dp0%)[\\/]?([^"\r\n]+\.(?:c?m?js))"', re.IGNORECASE)
+
+
+def _unwrap_cli_argv(raw: str | Path) -> list[str] | None:
+    p = Path(raw).resolve()
+    if os.name != "nt":
+        return [str(p)]
+    suf = p.suffix.lower()
+    if suf == ".exe":
+        return [str(p)]
+    if suf in {".cmd", ".bat"}:
+        sibling_exe = p.with_suffix(".exe")
+        if sibling_exe.is_file():
+            return [str(sibling_exe.resolve())]
+        try:
+            shim_text = p.read_bytes()[:16384].decode("utf-8", errors="replace")
+        except TimeoutError:
+            raise
+        except OSError:
+            return None
+        m = _NPM_SHIM_JS_RE.search(shim_text)
+        if not m:
+            return None
+        js_entry = (p.parent / m.group(1).replace("\\", "/")).resolve()
+        if not js_entry.is_file():
+            return None
+        sibling_node = p.parent / "node.exe"
+        node_bin = str(sibling_node.resolve()) if sibling_node.is_file() else (which_native("node.exe") or which_native("node"))
+        if not node_bin or not node_bin.lower().endswith(".exe"):
+            return None
+        return [str(Path(node_bin).resolve()), str(js_entry)]
+    return None
+
+
+def workbuddy_cli_argv() -> list[str] | None:
+    """Resolve safe direct-exec CLI argv (`CreateProcessW`-safe without `cmd.exe` batch parsing)."""
     explicit = os.environ.get("MINDIE_WB_BIN")
     if explicit and os.path.isabs(explicit) and Path(explicit).is_file():
-        return str(Path(explicit).resolve())
+        return _unwrap_cli_argv(explicit)
+    names = ("codebuddy.exe", "cbc.exe", "workbuddy.exe", "codebuddy", "cbc", "workbuddy") if os.name == "nt" else ("codebuddy", "cbc", "workbuddy")
+    for tool_name in names:
+        found = which_native(tool_name)
+        if found:
+            unwrapped = _unwrap_cli_argv(found)
+            if unwrapped:
+                return unwrapped
+    home = Path.home()
     candidates = [
         Path("/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy"),
-        Path.home() / "Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy",
+        home / "Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy",
     ]
+    if os.name == "nt":
+        local_app = Path(os.environ.get("LOCALAPPDATA") or (home / "AppData" / "Local"))
+        prog_files = Path(os.environ.get("ProgramFiles") or r"C:\Program Files")
+        for base in (local_app / "Programs" / "WorkBuddy", prog_files / "WorkBuddy"):
+            candidates.extend(
+                [
+                    base / "resources" / "app.asar.unpacked" / "cli" / "bin" / "codebuddy.exe",
+                    base / "resources" / "app.asar.unpacked" / "cli" / "bin" / "codebuddy.cmd",
+                    base / "bin" / "codebuddy.exe",
+                    base / "bin" / "codebuddy.cmd",
+                ]
+            )
     for cand in candidates:
         if cand.is_file():
-            return str(cand.resolve())
+            unwrapped = _unwrap_cli_argv(cand)
+            if unwrapped:
+                return unwrapped
     return None
+
+
+def workbuddy_cli_bin() -> str | None:
+    """Discover the bundled WorkBuddy / CodeBuddy CLI entrypoint across macOS, Linux, and Windows."""
+    argv = workbuddy_cli_argv()
+    return argv[-1] if argv else None
 
 
 def read_json(path: str | Path) -> dict:
@@ -246,6 +390,8 @@ def atomic_write_json(path: str | Path, payload: dict) -> Path:
     except BaseException:
         try:
             tmp_path.unlink(missing_ok=True)
+        except TimeoutError:
+            raise
         except OSError:
             pass
         raise

@@ -34,7 +34,7 @@ from component_catalog import COMPONENT_DESCRIPTIONS
 from component_update import trigger_background_update_if_due
 from identity import claim_bind, finish_bind, session_context
 from knowledge_cli import PRIVATE_KNOWLEDGE_CATALOG, execute_knowledge_tool
-from paths import config_path, diagnostics_config_path, read_json, remote_receipts_path, state_dir
+from paths import config_path, diagnostics_config_path, read_json, remote_receipts_path, state_dir, which_native
 
 MAX_YIELD_TIME_MS = 30000
 REMOTE_GRACE_SECONDS = 60.0
@@ -299,28 +299,35 @@ def _resolve_claim(
     return claim_bind(surface, tool_name, arguments, meta=meta, config=config)
 
 
-def _resolve_component_argv(adapter: dict, component: str) -> list[str]:
+def _resolve_component_argv(adapter: dict, component: str, *, allow_pythonpath: bool = False) -> list[str]:
     configured = adapter.get("component_commands", {}).get(component)
     if isinstance(configured, list) and configured and all(isinstance(x, str) and x for x in configured):
         return list(configured)
     py_exe = adapter.get("python") or sys.executable
+    py_flags = ["-X", "utf8"] if allow_pythonpath else ["-I", "-X", "utf8"]
     if component == "diagnostics":
-        return [str(py_exe), "-I", "-m", "mindie_diagnostics.cli"]
-    bin_name = "npu-top" if component == "npu_top" else f"mindie-{component}"
-    runtime_dir = str(Path(py_exe).expanduser().parent)
-    search_path = os.pathsep.join([runtime_dir, sysconfig.get_path("scripts"), os.environ.get("PATH", "")])
-    exe = shutil.which(bin_name, path=search_path)
-    if exe is not None:
-        return [exe]
+        return [str(py_exe), *py_flags, "-m", "mindie_diagnostics.cli"]
     module_map = {
         "profiler": "mindie_profiler",
         "sim": "mindie_sim",
         "coordinator": "mindie_coordinator.cli",
         "debugger": "mindie_debugger.cli",
-        "npu_top": "npu_top.cli",
+        "npu_top": "npu_top",
     }
+    if allow_pythonpath and component in module_map:
+        return [str(py_exe), *py_flags, "-m", module_map[component]]
+    bin_name = "npu-top" if component == "npu_top" else f"mindie-{component}"
+    runtime_dir = str(Path(py_exe).expanduser().parent)
+    search_path = os.pathsep.join([runtime_dir, sysconfig.get_path("scripts"), os.environ.get("PATH", "")])
+    exe = which_native(bin_name, path=search_path)
+    if exe is not None:
+        if os.name == "nt" and component in module_map and exe.lower().endswith(".exe"):
+            # Windows 11 Smart App Control (WinError 4551) blocks unsigned pip/uv
+            # console-script .exe trampolines; invoke via PSF-signed python.exe instead.
+            return [str(py_exe), *py_flags, "-m", module_map[component]]
+        return [exe]
     if component in module_map:
-        return [str(py_exe), "-I", "-m", module_map[component]]
+        return [str(py_exe), *py_flags, "-m", module_map[component]]
     raise FileNotFoundError(f"{bin_name} is not installed in the active MindIE runtime")
 
 
@@ -517,20 +524,22 @@ def call_tools_surface(
                 child_env["WB_CONVERSATION_ID"] = session
                 child_env["CODEBUDDY_SESSION_ID"] = session
                 child_env["AGY_CONVERSATION_ID"] = session
+            use_debugger_repo = False
             if component == "debugger":
-                debugger_repo = Path("/Users/maoxx241/code/debugger")
-                if (debugger_repo / "mindie_debugger").is_dir():
+                dbg_env = os.environ.get("MINDIE_DEBUGGER_REPO")
+                if dbg_env and (Path(dbg_env) / "mindie_debugger").is_dir():
                     existing_pp = child_env.get("PYTHONPATH", "")
-                    child_env["PYTHONPATH"] = (
-                        f"{debugger_repo}{os.pathsep}{existing_pp}" if existing_pp else str(debugger_repo)
-                    )
+                    child_env["PYTHONPATH"] = f"{dbg_env}{os.pathsep}{existing_pp}" if existing_pp else dbg_env
+                    use_debugger_repo = True
+                else:
+                    child_env.pop("PYTHONPATH", None)
             else:
                 child_env.pop("PYTHONPATH", None)
 
             invocation_token = os.urandom(16).hex() if name in COMPONENT_DESCRIPTIONS else None
             if invocation_token is not None:
                 child_env["MINDIE_DIAGNOSTICS_INVOCATION_TOKEN"] = invocation_token
-            cmd = _resolve_component_argv(adapter, component) + list(argv)
+            cmd = _resolve_component_argv(adapter, component, allow_pythonpath=use_debugger_repo) + list(argv)
             proc = bounded_run(
                 cmd,
                 "",

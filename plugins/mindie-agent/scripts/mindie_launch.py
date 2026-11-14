@@ -13,15 +13,14 @@ timeout budgets.
   on a bare non-zero exit, so PreToolUse uses `permissionDecision=deny` rather than
   propagating interpreter/child non-zero status. They never print
   `{"suppressOutput": true}` to hide the fault.
-- If the configured profile interpreter differs from `sys.executable`, re-executes
-  into the configured interpreter so `mindie_knowledge`, `remote_dev`,
-  `mindie_diagnostics`, `mindie_profiler`, `mindie_sim`, `mindie_coordinator`,
-  `mindie_debugger`, and `npu_top` imports resolve deterministically.
+- Re-executes into the configured profile interpreter with `-I -X utf8` and kills
+  the child process tree (POSIX session / Windows Job Object) on re-exec timeout.
 
 [Timeouts & Locks]
-- `HOOK_TOTAL = 10.0s`, `HOOK_LOCK_BUDGET = 2.0s`, `BOOTSTRAP_TOTAL = 540.0s`,
-  `SETUP_REEXEC_GRACE = 15.0s`. Hook re-exec uses `timeout=HOOK_TOTAL`; setup
-  re-exec uses `timeout=BOOTSTRAP_TOTAL + SETUP_REEXEC_GRACE`; MCP stdio stays unbounded.
+- `HOOK_EXEC_BUDGET = 8.0s`, `HOOK_CLEANUP_GRACE = 2.0s`, `HOOK_TOTAL = 10.0s`,
+  `HOOK_LOCK_BUDGET = 2.0s`, `BOOTSTRAP_TOTAL = 540.0s`, `SETUP_REEXEC_GRACE = 15.0s`.
+  Hook re-exec uses `timeout=HOOK_EXEC_BUDGET`; setup/update re-exec uses bounded
+  `BOOTSTRAP_TOTAL + SETUP_REEXEC_GRACE`; MCP stdio stays unbounded.
 
 [Side-Effect Policy]
 - Delegates hook, MCP, setup, and update execution to `bridge.py`,
@@ -32,13 +31,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import subprocess
 import sys
 
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from paths import apply_enterprise_transport_env, config_path, data_home, read_json
+from paths import apply_enterprise_transport_env, config_home, config_path, data_home, read_json
 
 HOOK_EXEC_BUDGET = 8.0
 HOOK_CLEANUP_GRACE = 2.0
@@ -63,7 +63,8 @@ def _norm_python_path(py_exe: str | Path) -> Path:
 
 def _has_full_wb_components(py_exe: str | Path) -> bool:
     p = Path(py_exe)
-    if not p.is_file():
+    norm = str(p).replace("\\", "/")
+    if "/uv/python/" in norm or not p.is_file():
         return False
     dbg_bin = p.parent / ("mindie-debugger.exe" if os.name == "nt" else "mindie-debugger")
     if dbg_bin.is_file():
@@ -93,9 +94,9 @@ def _preferred_python() -> str | None:
             if _has_full_wb_components(candidate):
                 return str(_norm_python_path(candidate))
     search_dirs = [cfg.parent]
-    host_cfg_dir = Path.home() / ".config" / "mindie-agent"
-    if host_cfg_dir not in search_dirs:
-        search_dirs.append(host_cfg_dir)
+    for extra in (config_home(), Path.home() / ".config" / "mindie-agent"):
+        if extra not in search_dirs:
+            search_dirs.append(extra)
     for cdir in search_dirs:
         for sibling_cfg in ("wb.json", "agy.json", "codex.json", "cc.json", "kimi.json"):
             scfg = cdir / sibling_cfg
@@ -130,8 +131,6 @@ def _emit_hook_failure(action: str, exc: BaseException) -> int:
 
 
 def _reexec_stdio(stream):
-    import subprocess
-
     try:
         if os.name == "nt":
             import msvcrt
@@ -143,6 +142,104 @@ def _reexec_stdio(stream):
         return stream
     except Exception:
         return subprocess.DEVNULL
+
+
+def _parse_cli_timeout(argv: list[str]) -> float | None:
+    import argparse
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--timeout", type=float, default=None)
+    try:
+        known, _ = parser.parse_known_args(argv[1:] if argv else [])
+    except (SystemExit, ValueError):
+        return None
+    return float(known.timeout) if known.timeout is not None and known.timeout > 0 else None
+
+
+def _timeout_role_budget(role: str, argv: list[str] | None = None) -> float | None:
+    if role == "hook":
+        return HOOK_EXEC_BUDGET
+    if role == "setup":
+        requested = _parse_cli_timeout(argv or [])
+        inner = BOOTSTRAP_TOTAL if requested is None else requested
+        return inner + SETUP_REEXEC_GRACE
+    if role == "update":
+        requested = _parse_cli_timeout(argv or [])
+        inner = BOOTSTRAP_TOTAL if requested is None else requested
+        return inner + SETUP_REEXEC_GRACE
+    return None
+
+
+def _run_hook_with_exec_budget(action: str, rest: list[str]) -> int:
+    """Bound in-process hook dispatch to HOOK_EXEC_BUDGET (POSIX SIGALRM)."""
+    import signal
+    import bridge
+
+    if not hasattr(signal, "SIGALRM") or not hasattr(signal, "setitimer"):
+        return bridge.main(rest)
+
+    def _on_alarm(_signum, _frame):
+        raise TimeoutError(f"hook exec exceeded HOOK_EXEC_BUDGET={HOOK_EXEC_BUDGET}s")
+
+    previous = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _on_alarm)
+    try:
+        signal.setitimer(signal.ITIMER_REAL, float(HOOK_EXEC_BUDGET))
+        try:
+            return int(bridge.main(rest))
+        except Exception as exc:
+            return _emit_hook_failure(action, exc)
+    finally:
+        try:
+            signal.setitimer(signal.ITIMER_REAL, 0.0)
+        finally:
+            signal.signal(signal.SIGALRM, previous)
+
+
+def _reexec(target_py: str, target_script: Path, argv: list[str], env: dict) -> int:
+    from bounded import _attach_windows_job, _close_windows_job, _kill_process_tree
+
+    timeout = _timeout_role_budget(argv[0], argv)
+    cmd = [target_py, "-I", "-X", "utf8", str(target_script), *argv]
+    popen_kwargs: dict = {"env": env}
+    if os.name == "nt":
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        if timeout is not None:
+            flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        popen_kwargs["creationflags"] = flags
+        popen_kwargs["stdin"] = _reexec_stdio(sys.stdin)
+        popen_kwargs["stdout"] = _reexec_stdio(sys.stdout)
+        popen_kwargs["stderr"] = _reexec_stdio(sys.stderr)
+    elif timeout is not None:
+        popen_kwargs["start_new_session"] = True
+
+    if timeout is None:
+        return int(subprocess.run(cmd, **popen_kwargs).returncode)
+
+    proc = subprocess.Popen(cmd, **popen_kwargs)
+    job = _attach_windows_job(proc, kill_on_close=(argv[0] != "hook"))
+    try:
+        rc = int(proc.wait(timeout=timeout))
+    except (subprocess.TimeoutExpired, TimeoutError) as exc:
+        _kill_process_tree(proc, job, wait_timeout=min(0.5, HOOK_CLEANUP_GRACE))
+        job = None
+        if argv[0] == "hook":
+            return _emit_hook_failure(argv[1] if len(argv) > 1 else "session-start", exc)
+        raise
+    except BaseException:
+        _kill_process_tree(proc, job, wait_timeout=min(0.5, HOOK_CLEANUP_GRACE))
+        job = None
+        raise
+    finally:
+        if job is not None:
+            _close_windows_job(job)
+
+    if argv[0] == "hook" and rc != 0:
+        return _emit_hook_failure(
+            argv[1] if len(argv) > 1 else "session-start",
+            RuntimeError(f"hook interpreter exited {rc}"),
+        )
+    return rc
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -195,42 +292,33 @@ def _dispatch(argv: list[str]) -> int:
         env = dict(os.environ)
         env["_MINDIE_WB_REEXEC"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
         if argv[0] in {"hook", "mcp"}:
             env["WB_PLUGIN_ROOT"] = str(target_script.parent.parent)
-        import subprocess
-
-        run_kwargs: dict = {"env": env}
-        if os.name == "nt":
-            run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            run_kwargs["stdin"] = _reexec_stdio(sys.stdin)
-            run_kwargs["stdout"] = _reexec_stdio(sys.stdout)
-            run_kwargs["stderr"] = _reexec_stdio(sys.stderr)
         if argv[0] == "hook":
-            run_kwargs["timeout"] = HOOK_TOTAL
-        elif argv[0] == "setup":
-            run_kwargs["timeout"] = BOOTSTRAP_TOTAL + SETUP_REEXEC_GRACE
-        try:
-            proc = subprocess.run([target_py, "-I", str(target_script), *argv], **run_kwargs)
-        except subprocess.TimeoutExpired as exc:
-            if argv[0] == "hook":
-                return _emit_hook_failure(argv[1] if len(argv) > 1 else "session-start", exc)
-            raise
-        if argv[0] == "hook" and proc.returncode != 0:
-            return _emit_hook_failure(
-                argv[1] if len(argv) > 1 else "session-start",
-                RuntimeError(f"hook interpreter exited {proc.returncode}"),
-            )
-        return int(proc.returncode)
+            env["_MINDIE_WB_HOOK_BUDGETED"] = "1"
+        return _reexec(target_py, target_script, argv, env)
 
     role = argv[0]
     rest = argv[1:]
     if role == "hook":
         import bridge
 
+        action = rest[0] if rest else "session-start"
+        budgeted = os.environ.get("_MINDIE_WB_HOOK_BUDGETED") == "1"
+        if os.name == "nt" and not budgeted and os.environ.get("_MINDIE_WB_REEXEC") != "1":
+            env = dict(os.environ)
+            env["_MINDIE_WB_HOOK_BUDGETED"] = "1"
+            env["_MINDIE_WB_REEXEC"] = "1"
+            env["PYTHONIOENCODING"] = "utf-8"
+            env["PYTHONUTF8"] = "1"
+            return _reexec(sys.executable, Path(__file__).resolve(), argv, env)
+        if os.name != "nt" and not budgeted:
+            return _run_hook_with_exec_budget(action, rest)
         try:
             return bridge.main(rest)
         except Exception as exc:
-            return _emit_hook_failure(rest[0] if rest else "session-start", exc)
+            return _emit_hook_failure(action, exc)
     if role == "mcp":
         import mcp_server
 

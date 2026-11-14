@@ -73,9 +73,16 @@ def test_admission_failure_does_not_terminate_stdio_server(tmp_path, monkeypatch
         {"jsonrpc": "2.0", "id": 4, "method": "tools/list"},
     ]
     # Missing native admission must fail only this request.
-    completed = subprocess.run([sys.executable, str(script), surface],
-                               input="".join(json.dumps(item) + "\n" for item in requests),
-                               text=True, capture_output=True, timeout=15, env=dict(os.environ))
+    completed = subprocess.run(
+        [sys.executable, "-I", "-X", "utf8", str(script), surface],
+        input="".join(json.dumps(item) + "\n" for item in requests),
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        timeout=15,
+        env=dict(os.environ),
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+    )
     assert completed.returncode == 0, completed.stderr
     replies = {item["id"]: item for item in map(json.loads, completed.stdout.splitlines())}
     assert set(replies) == {1, 2, 3, 4}

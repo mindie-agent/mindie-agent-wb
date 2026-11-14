@@ -156,16 +156,25 @@ def test_hook_and_setup_reexec_pass_timeout_mcp_does_not(tmp_path: Path, monkeyp
     seen: list[dict] = []
 
     def fake_run(argv, **kwargs):
-        seen.append({"argv": list(argv), "kwargs": dict(kwargs)})
+        seen.append({"kind": "run", "argv": list(argv), "kwargs": dict(kwargs)})
         return types.SimpleNamespace(returncode=0)
 
+    def fake_popen(argv, **kwargs):
+        rec = {"kind": "popen", "argv": list(argv), "kwargs": dict(kwargs), "timeout": None}
+        seen.append(rec)
+        return types.SimpleNamespace(pid=12345, wait=lambda timeout=None: rec.__setitem__("timeout", timeout) or 0)
+
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
     assert mindie_launch.main(["hook", "pre-tool-use"]) == 0
-    assert seen[-1]["kwargs"]["timeout"] == mindie_launch.HOOK_TOTAL
+    assert seen[-1]["kind"] == "popen"
+    assert seen[-1]["timeout"] == mindie_launch.HOOK_EXEC_BUDGET
     assert mindie_launch.main(["mcp", "tools"]) == 0
+    assert seen[-1]["kind"] == "run"
     assert "timeout" not in seen[-1]["kwargs"]
     assert mindie_launch.main(["setup", "init"]) == 0
-    assert seen[-1]["kwargs"]["timeout"] == mindie_launch.BOOTSTRAP_TOTAL + mindie_launch.SETUP_REEXEC_GRACE
+    assert seen[-1]["kind"] == "popen"
+    assert seen[-1]["timeout"] == mindie_launch.BOOTSTRAP_TOTAL + mindie_launch.SETUP_REEXEC_GRACE
 
 
 def test_hook_reexec_nonzero_is_json_deny_not_fail_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -174,7 +183,11 @@ def test_hook_reexec_nonzero_is_json_deny_not_fail_open(tmp_path: Path, monkeypa
     other = tmp_path / "other-python"
     other.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setattr(mindie_launch, "_preferred_python", lambda: str(other))
-    monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: types.SimpleNamespace(returncode=1))
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *_a, **_k: types.SimpleNamespace(pid=12345, wait=lambda timeout=None: 1),
+    )
     stdout = _CaptureStdout()
     monkeypatch.setattr(sys, "stdout", stdout)
     rc = mindie_launch.main(["hook", "pre-tool-use"])

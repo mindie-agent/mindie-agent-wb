@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.11-0F766E.svg" alt="Release v0.1.11"></a>
+  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.12-0F766E.svg" alt="Release v0.1.12"></a>
 </p>
 
 ## 1. 架构概览：连接器（Connector）与插件（Plugin）双重兼容
@@ -90,14 +90,24 @@ WorkBuddy 桌面端界面中的 **Connector（连接器）** 底层即基于 **A
 
    单独的 `init`（不带 `--install-wb`）只写 Profile 和运行时，**不**注册 `~/.workbuddy` 里的插件或连接器。
 
-   从锁定标签安装时：
+   从锁定标签安装时（macOS / Linux / WSL2）：
 
    ```sh
    MINDIE_TMP="${TMPDIR:-/tmp}/mindie-agent-wb-install"
    rm -rf "$MINDIE_TMP"
-   git -c core.longpaths=true -c core.autocrlf=false clone --depth 1 --branch v0.1.11 https://github.com/mindie-agent/mindie-agent-wb.git "$MINDIE_TMP"
+   git -c core.longpaths=true -c core.autocrlf=false clone --depth 1 --branch v0.1.12 https://github.com/mindie-agent/mindie-agent-wb.git "$MINDIE_TMP"
    UV_SYSTEM_CERTS=true UV_NATIVE_TLS=true uv run --no-project --python 3.13 python \
      "$MINDIE_TMP/plugins/mindie-agent/scripts/setup.py" init --install-wb --workspace-root "$PWD"
+   ```
+
+   Windows PowerShell 5.1 / 7 从锁定标签安装时：
+
+   ```powershell
+   $MINDIE_TMP = Join-Path $env:TEMP "mindie-agent-wb-install"
+   if (Test-Path $MINDIE_TMP) { Remove-Item -Recurse -Force $MINDIE_TMP }
+   git -c core.longpaths=true -c core.autocrlf=false clone --depth 1 --branch v0.1.12 https://github.com/mindie-agent/mindie-agent-wb.git "$MINDIE_TMP"
+   $env:UV_SYSTEM_CERTS = "true"; $env:UV_NATIVE_TLS = "true"
+   uv run --no-project --python 3.13 python "$MINDIE_TMP\plugins\mindie-agent\scripts\setup.py" init --install-wb --workspace-root "$PWD"
    ```
 
    `--help`、`-h` 和 `--dry-run`（含唯一缩写，例如 `--dry`）只打印说明或计划，不拉取运行时，也不写配置：
