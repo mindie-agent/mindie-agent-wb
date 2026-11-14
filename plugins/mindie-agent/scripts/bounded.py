@@ -30,6 +30,7 @@ from dataclasses import dataclass
 import math
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -290,7 +291,8 @@ def run(
     child_env["PYTHONUTF8"] = "1"
 
     cleanup_failed = False
-    with tempfile.TemporaryDirectory(prefix="mindie-wb-proc-", ignore_cleanup_errors=True) as tmp_dir:
+    tmp_dir = tempfile.mkdtemp(prefix="mindie-wb-proc-")
+    try:
         tmp_root = Path(tmp_dir)
         stdin_path = tmp_root / "stdin.txt"
         stdout_path = tmp_root / "stdout.txt"
@@ -323,24 +325,24 @@ def run(
                     if rc is not None:
                         break
                     if cancel is not None and cancel.is_set():
-                        _kill_process_tree(proc, job_handle)
+                        cleanup_failed = _kill_process_tree(proc, job_handle) or cleanup_failed
                         job_handle = None
                         raise ProcessCancelled(f"process cancelled: {argv[0]}")
                     now = time.monotonic()
                     if now >= deadline:
-                        _kill_process_tree(proc, job_handle)
+                        cleanup_failed = _kill_process_tree(proc, job_handle) or cleanup_failed
                         job_handle = None
                         raise TimeoutError(f"process timed out after {timeout:.2f}s: {argv[0]}")
                     if (stdout_path.exists() and stdout_path.stat().st_size > max_output) or (
                         stderr_path.exists() and stderr_path.stat().st_size > max_output
                     ):
-                        _kill_process_tree(proc, job_handle)
+                        cleanup_failed = _kill_process_tree(proc, job_handle) or cleanup_failed
                         job_handle = None
                         raise OutputLimitExceeded(f"process output exceeded {max_output} bytes")
                     time.sleep(min(0.025, max(0.001, deadline - now)))
             except BaseException:
                 if proc.poll() is None:
-                    _kill_process_tree(proc, job_handle)
+                    cleanup_failed = _kill_process_tree(proc, job_handle) or cleanup_failed
                     job_handle = None
                 raise
             finally:
@@ -350,6 +352,13 @@ def run(
         elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
         stdout_text = _read_bounded(stdout_path, max_output)
         stderr_text = _read_bounded(stderr_path, max_output)
+    finally:
+        try:
+            shutil.rmtree(tmp_dir)
+        except TimeoutError:
+            raise
+        except OSError:
+            cleanup_failed = True
 
     rc_int = int(proc.returncode if proc.returncode is not None else -1)
     if allowed_returncodes is not None and rc_int not in allowed_returncodes:

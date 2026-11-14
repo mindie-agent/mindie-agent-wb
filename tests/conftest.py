@@ -124,4 +124,7 @@ def isolated_mindie_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         if os.name == "nt" and base_dir != tmp_path:
             raw = str(base_dir.resolve())
             rm_target = raw if raw.startswith("\\\\?\\") else f"\\\\?\\{raw}"
-            shutil.rmtree(rm_target, onexc=_force_writable)
+            if sys.version_info >= (3, 12):
+                shutil.rmtree(rm_target, onexc=_force_writable)
+            else:
+                shutil.rmtree(rm_target, onerror=_force_writable)

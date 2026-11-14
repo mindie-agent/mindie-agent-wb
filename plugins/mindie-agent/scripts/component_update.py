@@ -13,8 +13,9 @@ requiring a new `mindie-agent-wb` plugin release.
 - Atomic Profile Rebinding: `wb.json` and `wb.engine.json` are updated via
   `atomic_write_json` (`os.replace()`) only after the candidate generation passes
   `runtime_inventory` lock and VCS receipt verification.
-- Background spawn writes `in_progress` with `pid` only after `Popen` returns;
-  dead/stale `in_progress` PIDs are reclaimed instead of wedging checks.
+- Background spawn claims `in_progress` with `run_id` under `_status_file_lock`
+  and attaches `pid` only if `run_id` is still `in_progress`; dead/stale PIDs
+  are reclaimed instead of wedging checks.
 - Never activates a session lease.
 
 [Timeouts & Locks]
@@ -31,12 +32,16 @@ requiring a new `mindie-agent-wb` plugin release.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 from pathlib import Path
+import secrets
 import subprocess
 import sys
 import time
+
+_REAL_OS = os
 
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
@@ -144,6 +149,59 @@ def _stop_untracked_updater(proc) -> None:
         )
 
 
+@contextlib.contextmanager
+def _status_file_lock(status_file: Path, *, timeout: float = 2.0):
+    """Synchronize `wb-component-update-status.json` read-modify-write across parent and child."""
+    lock_path = status_file.with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = _REAL_OS.open(str(lock_path), _REAL_OS.O_CREAT | _REAL_OS.O_RDWR, 0o600)
+    locked = False
+    deadline = time.monotonic() + max(0.05, float(timeout))
+    try:
+        if _REAL_OS.name == "nt":
+            import msvcrt
+
+            if _REAL_OS.fstat(fd).st_size == 0:
+                _REAL_OS.write(fd, b"\0")
+            while True:
+                _REAL_OS.lseek(fd, 0, _REAL_OS.SEEK_SET)
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    locked = True
+                    break
+                except OSError as exc:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"timed out acquiring {lock_path.name}") from exc
+                    time.sleep(0.01)
+        else:
+            import fcntl
+
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                    break
+                except BlockingIOError as exc:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"timed out acquiring {lock_path.name}") from exc
+                    time.sleep(0.01)
+        yield
+    finally:
+        try:
+            if locked:
+                if _REAL_OS.name == "nt":
+                    import msvcrt
+
+                    _REAL_OS.lseek(fd, 0, _REAL_OS.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            _REAL_OS.close(fd)
+
+
 def trigger_background_update_if_due(*, config: str | Path | None = None) -> bool | None:
     """Spawn a non-blocking background `component_update.py` check if the interval has elapsed.
 
@@ -154,33 +212,34 @@ def trigger_background_update_if_due(*, config: str | Path | None = None) -> boo
         return False
     status_file = data_home() / "wb-component-update-status.json"
     now = time.time()
+    run_id = secrets.token_hex(8)
     try:
         cfg_file = config_path(config)
         if not cfg_file.is_file():
             return False
-        if status_file.is_file():
-            data = read_json(status_file)
-            checked = float(data.get("checked_at") or 0.0)
-            st = data.get("status")
-            if st == "in_progress":
-                rec_pid = data.get("pid")
-                age = now - checked
-                if age < UPDATE_MAX_IN_PROGRESS_AGE and rec_pid is not None and _pid_running(rec_pid):
+        with _status_file_lock(status_file):
+            if status_file.is_file():
+                data = read_json(status_file)
+                checked = float(data.get("checked_at") or 0.0)
+                st = data.get("status")
+                if st == "in_progress":
+                    rec_pid = data.get("pid")
+                    age = now - checked
+                    if age < UPDATE_MAX_IN_PROGRESS_AGE and rec_pid is not None and _pid_running(rec_pid):
+                        return False
+                    if rec_pid is None and 0.0 <= age < UPDATE_SPAWN_CLAIM_GRACE:
+                        return False
+                    print(
+                        "MindIE WorkBuddy background updater pid is stale or not running; reclaiming leftover in_progress",
+                        file=sys.stderr,
+                    )
+                elif st == "failed" and now - checked < UPDATE_FAILURE_BACKOFF:
                     return False
-                if rec_pid is None and 0.0 <= age < UPDATE_SPAWN_CLAIM_GRACE:
+                elif st != "failed" and now - checked < UPDATE_CHECK_INTERVAL:
                     return False
-                print(
-                    "MindIE WorkBuddy background updater pid is stale or not running; reclaiming leftover in_progress",
-                    file=sys.stderr,
-                )
-            elif st == "failed" and now - checked < UPDATE_FAILURE_BACKOFF:
-                return False
-            elif st != "failed" and now - checked < UPDATE_CHECK_INTERVAL:
-                return False
-        adapter = read_json(cfg_file)
-        py_exe = adapter.get("python") or sys.executable
-        run_id = os.urandom(8).hex()
-        atomic_write_json(status_file, {"checked_at": now, "status": "in_progress", "run_id": run_id})
+            adapter = read_json(cfg_file)
+            py_exe = adapter.get("python") or sys.executable
+            atomic_write_json(status_file, {"checked_at": now, "status": "in_progress", "run_id": run_id})
         env = apply_enterprise_transport_env(dict(os.environ))
         env["MINDIE_WB_UPDATE_RUN_ID"] = run_id
         kwargs: dict = dict(
@@ -220,16 +279,21 @@ def trigger_background_update_if_due(*, config: str | Path | None = None) -> boo
     if isinstance(proc_pid, int) and not isinstance(proc_pid, bool):
         status_record["pid"] = int(proc_pid)
     try:
-        cur = read_json(status_file) if status_file.is_file() else {}
-        if cur.get("run_id") == run_id and cur.get("status") == "in_progress":
-            atomic_write_json(status_file, status_record)
+        with _status_file_lock(status_file):
+            cur = read_json(status_file) if status_file.is_file() else {}
+            if cur.get("run_id") == run_id and cur.get("status") == "in_progress":
+                atomic_write_json(status_file, status_record)
     except TimeoutError as write_exc:
         _stop_untracked_updater(proc)
-        _record_background_update_failure(write_exc, status_file=status_file, checked_at=now)
+        _record_background_update_failure(
+            write_exc, status_file=status_file, checked_at=now, preserve_completed_run_id=run_id
+        )
         raise
     except (OSError, ValueError) as write_exc:
         _stop_untracked_updater(proc)
-        _record_background_update_failure(write_exc, status_file=status_file, checked_at=now)
+        _record_background_update_failure(
+            write_exc, status_file=status_file, checked_at=now, preserve_completed_run_id=run_id
+        )
         return None
     return True
 
@@ -239,17 +303,26 @@ def _record_background_update_failure(
     *,
     status_file: Path | None = None,
     checked_at: float | None = None,
+    preserve_completed_run_id: str | None = None,
 ) -> None:
     target = status_file or (data_home() / "wb-component-update-status.json")
     try:
-        atomic_write_json(
-            target,
-            {
-                "checked_at": time.time() if checked_at is None else checked_at,
-                "status": "failed",
-                "error": f"{type(exc).__name__}: {exc}",
-            },
-        )
+        with _status_file_lock(target):
+            if preserve_completed_run_id is not None and target.is_file():
+                try:
+                    cur = read_json(target)
+                except (OSError, ValueError):
+                    cur = {}
+                if cur.get("run_id") == preserve_completed_run_id and cur.get("status") in {"up_to_date", "updated"}:
+                    return
+            atomic_write_json(
+                target,
+                {
+                    "checked_at": time.time() if checked_at is None else checked_at,
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
     except TimeoutError:
         raise
     except OSError:
@@ -515,7 +588,8 @@ def check(
         if result.get("receipt_unconfirmed"):
             status_payload["receipt_warning"] = result.get("receipt_warning")
             status_payload["receipt_unconfirmed"] = True
-        atomic_write_json(status_file, status_payload)
+        with _status_file_lock(status_file):
+            atomic_write_json(status_file, status_payload)
     except (TimeoutError, OSError) as exc:
         if isinstance(exc, TimeoutError) and status != "updated":
             raise

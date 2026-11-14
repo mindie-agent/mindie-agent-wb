@@ -282,7 +282,7 @@ def workbuddy_config_dir(config: str | Path | None = None) -> Path:
     return (Path.home() / ".workbuddy").resolve()
 
 
-_NPM_SHIM_JS_RE = re.compile(r'"%~dp0[\\/]?([^"\r\n]+\.(?:c?m?js))"', re.IGNORECASE)
+_NPM_SHIM_JS_RE = re.compile(r'"%(?:~dp0|dp0%)[\\/]?([^"\r\n]+\.(?:c?m?js))"', re.IGNORECASE)
 
 
 def _unwrap_cli_argv(raw: str | Path) -> list[str] | None:

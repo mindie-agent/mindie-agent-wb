@@ -312,7 +312,7 @@ def _resolve_component_argv(adapter: dict, component: str, *, allow_pythonpath: 
         "sim": "mindie_sim",
         "coordinator": "mindie_coordinator.cli",
         "debugger": "mindie_debugger.cli",
-        "npu_top": "npu_top.cli",
+        "npu_top": "npu_top",
     }
     if allow_pythonpath and component in module_map:
         return [str(py_exe), *py_flags, "-m", module_map[component]]

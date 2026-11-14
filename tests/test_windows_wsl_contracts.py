@@ -89,8 +89,15 @@ def test_which_native_filters_wsl_mnt_c_shims_and_windowsapps_stubs(
     cli_js = pkg_dir / "cli.js"
     cli_js.write_text("console.log('ok')\n", encoding="utf-8")
     cb_cmd = npm_dir / "codebuddy.cmd"
-    cb_cmd.write_text('@ECHO off\r\n"%~dp0\\node.exe"  "%~dp0\\node_modules\\codebuddy\\bin\\cli.js" %*\r\n', encoding="utf-8")
+    cb_cmd.write_text(
+        '@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n'
+        '"%_prog%"  "%dp0%\\node_modules\\codebuddy\\bin\\cli.js" %*\r\n',
+        encoding="utf-8",
+    )
     assert paths._unwrap_cli_argv(cb_cmd) == [str(node_exe.resolve()), str(cli_js.resolve())]
+    cb_tilde_cmd = npm_dir / "codebuddy-tilde.cmd"
+    cb_tilde_cmd.write_text('@ECHO off\r\n"%~dp0\\node.exe"  "%~dp0\\node_modules\\codebuddy\\bin\\cli.js" %*\r\n', encoding="utf-8")
+    assert paths._unwrap_cli_argv(cb_tilde_cmd) == [str(node_exe.resolve()), str(cli_js.resolve())]
     opaque_cmd = npm_dir / "opaque.cmd"
     opaque_cmd.write_text("@echo off\r\necho unsafe\r\n", encoding="utf-8")
     assert paths._unwrap_cli_argv(opaque_cmd) is None
@@ -101,16 +108,34 @@ def test_which_native_filters_wsl_mnt_c_shims_and_windowsapps_stubs(
     fake_dbg_exe = tmp_path / "Scripts" / "mindie-debugger.exe"
     fake_dbg_exe.parent.mkdir()
     fake_dbg_exe.write_bytes(b"MZ-unsigned-trampoline")
-    monkeypatch.setattr(mcp_server, "os", _nt_os())
-    monkeypatch.setattr(mcp_server, "which_native", lambda cmd, path=None: str(fake_dbg_exe))
-    assert mcp_server._resolve_component_argv({"python": r"C:\Python\python.exe"}, "debugger") == [
-        r"C:\Python\python.exe",
-        "-I",
-        "-X",
-        "utf8",
-        "-m",
-        "mindie_debugger.cli",
-    ]
+    fake_npu_exe = fake_dbg_exe.parent / "npu-top.exe"
+    fake_npu_exe.write_bytes(b"MZ-unsigned-trampoline")
+    with pytest.MonkeyPatch.context() as mp_ctx:
+        mp_ctx.setattr(mcp_server, "os", _nt_os())
+        mp_ctx.setattr(
+            mcp_server,
+            "which_native",
+            lambda cmd, path=None: str(fake_npu_exe if cmd == "npu-top" else fake_dbg_exe),
+        )
+        assert mcp_server._resolve_component_argv({"python": r"C:\Python\python.exe"}, "debugger") == [
+            r"C:\Python\python.exe",
+            "-I",
+            "-X",
+            "utf8",
+            "-m",
+            "mindie_debugger.cli",
+        ]
+        assert mcp_server._resolve_component_argv({"python": r"C:\Python\python.exe"}, "npu_top") == [
+            r"C:\Python\python.exe",
+            "-I",
+            "-X",
+            "utf8",
+            "-m",
+            "npu_top",
+        ]
+    npu_help = bounded.run([sys.executable, "-X", "utf8", "-m", "npu_top", "--help"], timeout=10.0)
+    assert npu_help.returncode == 0
+    assert npu_help.stdout.strip()
 
 
 def test_powershell_activation_hint_and_knowledge_cli_utf8_bom_input_file(
@@ -234,18 +259,18 @@ def test_organizer_proxy_tunnel_vs_post_send_transmission_honesty(monkeypatch: p
 def test_unc_file_urls_and_extended_unc_transcript_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setattr(diagnostic_support, "os", _nt_os())
-    unc_path = diagnostic_support._file_url_to_path("file://wsl.localhost/Ubuntu/home/dev/repo")
-    assert str(unc_path) in {r"\\wsl.localhost\Ubuntu\home\dev\repo", "//wsl.localhost/Ubuntu/home/dev/repo"}
-    drive_path = diagnostic_support._file_url_to_path("file:///C:/Users/dev/code/debugger")
-    assert str(drive_path).replace("\\", "/") == "C:/Users/dev/code/debugger"
+    with pytest.MonkeyPatch.context() as mp_ctx:
+        mp_ctx.setattr(diagnostic_support, "os", _nt_os())
+        unc_path = diagnostic_support._file_url_to_path("file://wsl.localhost/Ubuntu/home/dev/repo")
+        assert str(unc_path) in {r"\\wsl.localhost\Ubuntu\home\dev\repo", "//wsl.localhost/Ubuntu/home/dev/repo"}
+        drive_path = diagnostic_support._file_url_to_path("file:///C:/Users/dev/code/debugger")
+        assert str(drive_path).replace("\\", "/") == "C:/Users/dev/code/debugger"
 
-    monkeypatch.setattr(wb_transcript, "os", _nt_os())
-    assert wb_transcript._strip_win_extended_prefix(r"\\?\UNC\server\share\proj\a.jsonl") == r"\\server\share\proj\a.jsonl"
-    assert wb_transcript._strip_win_extended_prefix(r"\\?\C:\Users\dev\a.jsonl") == r"C:\Users\dev\a.jsonl"
+        mp_ctx.setattr(wb_transcript, "os", _nt_os())
+        assert wb_transcript._strip_win_extended_prefix(r"\\?\UNC\server\share\proj\a.jsonl") == r"\\server\share\proj\a.jsonl"
+        assert wb_transcript._strip_win_extended_prefix(r"\\?\C:\Users\dev\a.jsonl") == r"C:\Users\dev\a.jsonl"
 
     # Verify incremental transcript read survives extended-length path differences
-    monkeypatch.undo()
     tfile = tmp_path / f"{SESSION_ID}.jsonl"
     line1 = json.dumps(
         {
@@ -299,21 +324,22 @@ def test_bounded_run_kills_grandchild_holding_stdout_pipe_and_tracks_taskkill_ex
             return 0
 
     fake_proc = _FakePopen()
-    monkeypatch.setattr(bounded, "os", _nt_os())
-    monkeypatch.setattr(bounded, "_STDLIB_POPEN_CLS", _FakePopen)
-    monkeypatch.setattr(
-        bounded,
-        "_STDLIB_POPEN",
-        lambda *_a, **_k: types.SimpleNamespace(wait=lambda timeout=None: 5, kill=lambda: None),
-    )
-    assert bounded._kill_process_tree(fake_proc, job_handle=None, wait_timeout=1.0) is True
+    with pytest.MonkeyPatch.context() as mp_ctx:
+        mp_ctx.setattr(bounded, "os", _nt_os())
+        mp_ctx.setattr(bounded, "_STDLIB_POPEN_CLS", _FakePopen)
+        mp_ctx.setattr(
+            bounded,
+            "_STDLIB_POPEN",
+            lambda *_a, **_k: types.SimpleNamespace(wait=lambda timeout=None: 5, kill=lambda: None),
+        )
+        assert bounded._kill_process_tree(fake_proc, job_handle=None, wait_timeout=1.0) is True
 
-    monkeypatch.setattr(
-        bounded,
-        "_STDLIB_POPEN",
-        lambda *_a, **_k: types.SimpleNamespace(wait=lambda timeout=None: 128, kill=lambda: None),
-    )
-    assert bounded._kill_process_tree(fake_proc, job_handle=None, wait_timeout=1.0) is False
+        mp_ctx.setattr(
+            bounded,
+            "_STDLIB_POPEN",
+            lambda *_a, **_k: types.SimpleNamespace(wait=lambda timeout=None: 128, kill=lambda: None),
+        )
+        assert bounded._kill_process_tree(fake_proc, job_handle=None, wait_timeout=1.0) is False
 
     # Verify argparse-compatible `--timeout` parsing and background update fast-child race guard
     import component_update
@@ -322,23 +348,39 @@ def test_bounded_run_kills_grandchild_holding_stdout_pipe_and_tracks_taskkill_ex
     assert mindie_launch._parse_cli_timeout(["update", "--timeout", "5", "--timeout", "540"]) == 540.0
     assert mindie_launch._parse_cli_timeout(["update", "--time", "600"]) == 600.0
 
-    monkeypatch.delenv("MINDIE_CONFIG_HOME", raising=False)
-    cfg = tmp_path / "wb_cfg" / "wb.json"
-    cfg.parent.mkdir()
-    cfg.write_text(json.dumps({"python": sys.executable}), encoding="utf-8")
-    data_dir = tmp_path / "wb_data"
-    data_dir.mkdir()
-    monkeypatch.setattr(component_update, "data_home", lambda: data_dir)
-    status_file = data_dir / "wb-component-update-status.json"
+    with pytest.MonkeyPatch.context() as mp_ctx:
+        mp_ctx.delenv("MINDIE_CONFIG_HOME", raising=False)
+        cfg = tmp_path / "wb_cfg" / "wb.json"
+        cfg.parent.mkdir()
+        cfg.write_text(json.dumps({"python": sys.executable}), encoding="utf-8")
+        data_dir = tmp_path / "wb_data"
+        data_dir.mkdir()
+        mp_ctx.setattr(component_update, "data_home", lambda: data_dir)
+        status_file = data_dir / "wb-component-update-status.json"
 
-    def _fast_child_popen(_cmd, **kwargs):
-        rid = kwargs["env"]["MINDIE_WB_UPDATE_RUN_ID"]
-        paths.atomic_write_json(
-            status_file,
-            {"checked_at": time.time(), "status": "up_to_date", "run_id": rid},
-        )
-        return types.SimpleNamespace(pid=43210)
+        def _fast_child_popen(_cmd, **kwargs):
+            rid = kwargs["env"]["MINDIE_WB_UPDATE_RUN_ID"]
+            with component_update._status_file_lock(status_file):
+                paths.atomic_write_json(
+                    status_file,
+                    {"checked_at": time.time(), "status": "up_to_date", "run_id": rid},
+                )
+            return types.SimpleNamespace(pid=43210)
 
-    monkeypatch.setattr(component_update.subprocess, "Popen", _fast_child_popen)
-    assert component_update.trigger_background_update_if_due(config=cfg) is True
-    assert json.loads(status_file.read_text(encoding="utf-8"))["status"] == "up_to_date"
+        mp_ctx.setattr(component_update.subprocess, "Popen", _fast_child_popen)
+        assert component_update.trigger_background_update_if_due(config=cfg) is True
+        assert json.loads(status_file.read_text(encoding="utf-8"))["status"] == "up_to_date"
+
+    # Temp-dir cleanup failure on normal exit preserves output while reporting cleanup_failed=True
+    real_rmtree = bounded.shutil.rmtree
+
+    def _locked_rmtree(target, *a, **kw):
+        real_rmtree(target, *a, **kw)
+        raise PermissionError(13, "File is held open")
+
+    with pytest.MonkeyPatch.context() as mp_ctx:
+        mp_ctx.setattr(bounded.shutil, "rmtree", _locked_rmtree)
+        locked_res = bounded.run([sys.executable, "-I", "-c", "print('clean-output')"], timeout=5.0)
+    assert locked_res.returncode == 0
+    assert locked_res.stdout.strip() == "clean-output"
+    assert locked_res.cleanup_failed is True
