@@ -425,9 +425,8 @@ def test_inventory_timeout_clears_in_progress(
         raise TimeoutError("inventory timed out")
 
     monkeypatch.setattr("mindie_knowledge.component_runtime.read_inventory", boom)
-    res = component_update.check(config=cfg, source=REPO_ROOT)
-    assert res["status"] == "failed"
-    assert "TimeoutError" in res["inventory_error"]
+    with pytest.raises(TimeoutError, match="inventory timed out"):
+        component_update.check(config=cfg, source=REPO_ROOT)
     status = json.loads((data_home() / "wb-component-update-status.json").read_text(encoding="utf-8"))
     assert status["status"] == "failed"
     assert "TimeoutError" in status["error"]

@@ -128,6 +128,8 @@ def _record_background_update_failure(exc: BaseException) -> None:
                 "error": f"{type(exc).__name__}: {exc}",
             },
         )
+    except TimeoutError:
+        raise
     except OSError:
         pass
 
@@ -265,6 +267,9 @@ def check(
             timeout=timeout,
         )
     except Exception as exc:
+        import diagnostic_support
+
+        diag = diagnostic_support.failure("component.update", "prepare", "update", exception=exc, config=cfg_file)
         try:
             atomic_write_json(
                 status_file,
@@ -272,14 +277,19 @@ def check(
                     "checked_at": time.time(),
                     "status": "failed",
                     "error": f"{type(exc).__name__}: {exc}",
+                    "diagnostic": diag,
                 },
             )
+        except TimeoutError:
+            raise
         except OSError:
             pass
         raise
 
+    post_promote_warn = None
     if artifact is not None:
         new_python = _norm_python_path(artifact["python"])
+        installed = artifact["installed"]
         updated_adapter = dict(adapter)
         updated_adapter["python"] = new_python
         updated_adapter["component_runtime"] = artifact["components"]
@@ -290,25 +300,49 @@ def check(
                 artifact["components"]["runtime"],
             )
         atomic_write_json(cfg_file, updated_adapter)
-        if eng_file.is_file():
-            eng_payload = read_json(eng_file)
-            eng_payload["summary_command"] = [new_python, "-I", str(HERE / "organizer.py")]
-            atomic_write_json(eng_file, eng_payload)
         status = "updated"
         active_python = new_python
-        installed = artifact["installed"]
+        try:
+            if eng_file.is_file():
+                eng_payload = read_json(eng_file)
+                eng_payload["summary_command"] = [new_python, "-I", str(HERE / "organizer.py")]
+                atomic_write_json(eng_file, eng_payload)
+        except (TimeoutError, OSError, ValueError, TypeError) as exc:
+            post_promote_warn = f"{type(exc).__name__}: {exc}"
     else:
         status = "up_to_date"
         active_python = _norm_python_path(current_python)
         try:
             installed = read_inventory(active_python, timeout=15.0)
-        except Exception as exc:
+        except TimeoutError as exc:
             error = f"{type(exc).__name__}: {exc}"
             try:
                 atomic_write_json(
                     status_file,
-                    {"checked_at": time.time(), "status": "failed", "error": error},
+                    {
+                        "checked_at": time.time(),
+                        "status": "failed",
+                        "error": error,
+                        "python": active_python,
+                    },
                 )
+            except TimeoutError:
+                raise
+            except OSError:
+                pass
+            raise
+        except Exception as exc:
+            import diagnostic_support
+
+            error = f"{type(exc).__name__}: {exc}"
+            diag = diagnostic_support.failure("component.update", "inventory", "update", exception=exc, config=cfg_file)
+            try:
+                atomic_write_json(
+                    status_file,
+                    {"checked_at": time.time(), "status": "failed", "error": error, "diagnostic": diag},
+                )
+            except TimeoutError:
+                raise
             except OSError:
                 pass
             return dict(
@@ -317,6 +351,7 @@ def check(
                 status="failed",
                 python=active_python,
                 inventory_error=error,
+                diagnostic=diag,
             )
 
     result: dict = dict(
@@ -326,24 +361,39 @@ def check(
         python=active_python,
         installed=installed,
     )
-    if sync_feeds and community_config_path(cfg_file).is_file() and eng_file.is_file():
+    if post_promote_warn is not None:
+        result["receipt_warning"] = post_promote_warn
+        result["receipt_unconfirmed"] = True
+    if sync_feeds:
         try:
-            from mindie_knowledge.loop.cli import sync_feeds as run_sync_feeds
+            if community_config_path(cfg_file).is_file() and eng_file.is_file():
+                from mindie_knowledge.loop.cli import sync_feeds as run_sync_feeds
 
-            result["feed_sync"] = run_sync_feeds(str(eng_file))
+                result["feed_sync"] = run_sync_feeds(str(eng_file))
         except Exception as exc:
-            result["feed_sync_error"] = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, TimeoutError) and status != "updated":
+                raise
+            err_msg = f"{type(exc).__name__}: {exc}"
+            result["feed_sync_error"] = err_msg
+            if status == "updated":
+                result.setdefault("receipt_warning", err_msg)
+                result["receipt_unconfirmed"] = True
     try:
-        atomic_write_json(
-            status_file,
-            {
-                "checked_at": time.time(),
-                "status": status,
-                "python": active_python,
-            },
-        )
-    except OSError:
-        pass
+        status_payload: dict = {
+            "checked_at": time.time(),
+            "status": status,
+            "python": active_python,
+        }
+        if result.get("receipt_unconfirmed"):
+            status_payload["receipt_warning"] = result.get("receipt_warning")
+            status_payload["receipt_unconfirmed"] = True
+        atomic_write_json(status_file, status_payload)
+    except (TimeoutError, OSError) as exc:
+        if isinstance(exc, TimeoutError) and status != "updated":
+            raise
+        if status == "updated":
+            result.setdefault("receipt_warning", f"{type(exc).__name__}: {exc}")
+            result["receipt_unconfirmed"] = True
     return result
 
 
@@ -373,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     sys.stdout.buffer.write((json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"))
     sys.stdout.buffer.flush()
-    return 0
+    return 1 if payload.get("status") == "failed" else 0
 
 
 if __name__ == "__main__":

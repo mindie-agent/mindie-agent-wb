@@ -181,7 +181,9 @@ class RemoteReceipts:
 
 def _attach_accounting_warning(result: dict, warning_key: str, exc: Exception) -> dict:
     structured = dict(result.get("structuredContent") or {})
-    structured[warning_key] = f"{type(exc).__name__}: {exc}"
+    msg = f"{type(exc).__name__}: {exc}"
+    structured[warning_key] = msg
+    structured.setdefault("receipt_warning", msg)
     structured["receipt_unconfirmed"] = True
     result["structuredContent"] = structured
     content = list(result.get("content") or [])
@@ -267,10 +269,11 @@ def component_tools() -> list[dict]:
             inputSchema=dict(
                 type="object",
                 additionalProperties=False,
-                required=["root"],
+                required=[],
                 properties=dict(
                     root=dict(type="string"),
                     operation_id=dict(type="string"),
+                    incident_id=dict(type="string"),
                     output=dict(type="string"),
                     **limits,
                 ),
@@ -425,14 +428,18 @@ def call_remote_surface(
 
     try:
         receipt_store.finish(call_id, outcome)
-    except (OSError, sqlite3.Error) as exc:
+    except (TimeoutError, OSError, sqlite3.Error) as exc:
+        if not succeeded and isinstance(exc, TimeoutError):
+            raise
         if succeeded:
             result = _attach_accounting_warning(result, "receipt_warning", exc)
 
     if bind_id is not None:
         try:
             finish_bind(bind_id, succeeded, config=config)
-        except (OSError, sqlite3.Error) as exc:
+        except (TimeoutError, OSError, sqlite3.Error) as exc:
+            if not succeeded and isinstance(exc, TimeoutError):
+                raise
             if succeeded:
                 result = _attach_accounting_warning(result, "bind_warning", exc)
     return result
@@ -478,17 +485,21 @@ def call_tools_surface(
                     raise ValueError("argv must be a list of strings")
             elif name == "diagnostics_status":
                 component, argv = "diagnostics", ["reporting", "status"]
-                if isinstance(args.get("config"), str):
-                    argv += ["--config", args["config"]]
+                diag_cfg = args.get("config") if isinstance(args.get("config"), str) else str(diagnostics_config_path(config))
+                argv += ["--config", diag_cfg]
             else:
+                import diagnostic_support
+
                 component = "diagnostics"
                 root_arg = args.get("root")
-                if not isinstance(root_arg, str) or not root_arg:
-                    raise ValueError("diagnostics_bundle requires 'root'")
-                argv = ["bundle", "--root", root_arg]
-                for k in ("operation_id", "output"):
-                    if isinstance(args.get(k), str):
-                        argv += ["--" + k.replace("_", "-"), args[k]]
+                if root_arg is not None and (not isinstance(root_arg, str) or not root_arg):
+                    raise ValueError("diagnostics_bundle 'root' must be a non-empty string")
+                argv = ["bundle", "--root", root_arg or diagnostic_support.default_diagnostics_root()]
+                op_id = args.get("operation_id") if isinstance(args.get("operation_id"), str) else args.get("incident_id")
+                if isinstance(op_id, str) and op_id:
+                    argv += ["--operation-id", op_id]
+                if isinstance(args.get("output"), str) and args["output"]:
+                    argv += ["--output", args["output"]]
 
             budget = args.get("max_output_tokens", 16384)
             if type(budget) is not int or not 1 <= budget <= 262144:
@@ -500,6 +511,7 @@ def call_tools_surface(
 
             child_env = dict(os.environ)
             child_env["MINDIE_AGENT_CONFIG"] = str(cfg_file)
+            child_env.setdefault("MINDIE_DIAGNOSTICS_CONFIG", str(diagnostics_config_path(config)))
             if session and session != "wb-default-session":
                 child_env["WORKBUDDY_SESSION_ID"] = session
                 child_env["WB_CONVERSATION_ID"] = session
@@ -515,6 +527,9 @@ def call_tools_surface(
             else:
                 child_env.pop("PYTHONPATH", None)
 
+            invocation_token = os.urandom(16).hex() if name in COMPONENT_DESCRIPTIONS else None
+            if invocation_token is not None:
+                child_env["MINDIE_DIAGNOSTICS_INVOCATION_TOKEN"] = invocation_token
             cmd = _resolve_component_argv(adapter, component) + list(argv)
             proc = bounded_run(
                 cmd,
@@ -543,6 +558,16 @@ def call_tools_surface(
                     payload["result"] = json.loads(proc.stdout)
                 except ValueError:
                     pass
+            if name in COMPONENT_DESCRIPTIONS and proc.returncode not in (0, 2):
+                import diagnostic_support
+
+                diag = diagnostic_support.record_component_crash(
+                    component, argv, proc.returncode, proc.stderr,
+                    parsed_result=payload.get("result"), config=config, executable=cmd[0],
+                    invocation_token=invocation_token,
+                )
+                if diag is not None:
+                    payload["diagnostic"] = diag
             succeeded = proc.returncode == 0
             result = dict(
                 content=[dict(type="text", text=canonical(payload))],
@@ -552,16 +577,25 @@ def call_tools_surface(
         else:
             raise ValueError(f"unknown mindie-tools tool: {name}")
     except Exception as exc:
+        import diagnostic_support
+
+        err_struct = dict(error=str(exc), error_type=type(exc).__name__)
+        if diagnostic_support.is_internal_mcp_exception(exc):
+            err_struct["diagnostic"] = diagnostic_support.failure(
+                "mcp.tools", str(name or "dispatch"), "internal", exception=exc, config=config
+            )
         result = dict(
             content=[dict(type="text", text=f"{type(exc).__name__}: {exc}")],
-            structuredContent=dict(error=str(exc), error_type=type(exc).__name__),
+            structuredContent=err_struct,
             isError=True,
         )
 
     if bind_id is not None:
         try:
             finish_bind(bind_id, succeeded, config=config)
-        except (OSError, sqlite3.Error) as exc:
+        except (TimeoutError, OSError, sqlite3.Error) as exc:
+            if not succeeded and isinstance(exc, TimeoutError):
+                raise
             if succeeded:
                 result = _attach_accounting_warning(result, "bind_warning", exc)
     return result
@@ -643,7 +677,9 @@ def call_knowledge_surface(
     if bind_id is not None:
         try:
             finish_bind(bind_id, succeeded, config=config)
-        except (OSError, sqlite3.Error) as exc:
+        except (TimeoutError, OSError, sqlite3.Error) as exc:
+            if not succeeded and isinstance(exc, TimeoutError):
+                raise
             if succeeded:
                 result = _attach_accounting_warning(result, "bind_warning", exc)
     return result
