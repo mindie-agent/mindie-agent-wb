@@ -67,6 +67,7 @@ from setup_sharing import (
     read_optional_json as _read_optional_spec,
     sharing_status as _sharing_status_impl,
 )
+from storage_lifecycle import configure_uv_cache
 from wb_install import install_workbuddy_plugin
 
 BOOTSTRAP_TIMEOUT = 540.0
@@ -274,6 +275,7 @@ def ensure_runtime_python(
         raise RuntimeError("uv is required to bootstrap the MindIE WorkBuddy runtime")
 
     env = apply_enterprise_transport_env(dict(os.environ))
+    configure_uv_cache(venv_dir, env)
     env["UV_PROJECT_ENVIRONMENT"] = str(venv_dir)
     proc = bounded_run(
         [

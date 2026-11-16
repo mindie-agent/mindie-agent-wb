@@ -35,6 +35,7 @@ from component_update import trigger_background_update_if_due
 from identity import claim_bind, finish_bind, session_context
 from knowledge_cli import PRIVATE_KNOWLEDGE_CATALOG, execute_knowledge_tool
 from paths import config_path, diagnostics_config_path, read_json, remote_receipts_path, state_dir, which_native
+from storage_lifecycle import hold_runtime_lease
 
 MAX_YIELD_TIME_MS = 30000
 REMOTE_GRACE_SECONDS = 60.0
@@ -753,6 +754,11 @@ def serve(surface: str = "tools") -> int:
         surface = "tools"
     if surface not in {"remote", "tools", "knowledge"}:
         raise ValueError(f"unknown MindIE MCP surface: {surface}")
+    with hold_runtime_lease():
+        return _serve_lines(surface)
+
+
+def _serve_lines(surface: str) -> int:
     for raw_line in sys.stdin.buffer:
         raw_line = raw_line.strip()
         if not raw_line:
@@ -777,9 +783,10 @@ def main(argv: list[str] | None = None) -> int:
     surface = args[0] if args else "tools"
     if "--once" not in argv:
         from remote_dev.mcp.catalog_refresh import profile_selection, serve_selected
-        return serve_selected(lambda: profile_selection(
-            config_path(), HERE, surface, config_env="MINDIE_AGENT_CONFIG", plugin_env="WB_PLUGIN_ROOT",
-        ))
+        with hold_runtime_lease():
+            return serve_selected(lambda: profile_selection(
+                config_path(), HERE, surface, config_env="MINDIE_AGENT_CONFIG", plugin_env="WB_PLUGIN_ROOT",
+            ))
     return serve(surface)
 
 

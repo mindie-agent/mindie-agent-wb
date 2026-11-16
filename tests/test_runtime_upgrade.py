@@ -10,7 +10,6 @@ import stat
 import subprocess
 import sys
 import tarfile
-import tempfile
 import time
 
 import anyio
@@ -35,12 +34,16 @@ OLD_TARGETS = {
     "mindie-coordinator": ("coordinator", "14d7cec7247bdcbea9b9878db4770e3a05a6ea41"),
     "mindie-sim": ("sim", "dbadff04b60937a0722b0a227cdad01beed083cd"),
 }
+_PREWARMED_UV_CACHE = os.environ.get("UV_CACHE_DIR")
 
 
 def test_old_runtime_pair_survives_prepare_failure_and_upgrades(tmp_path, monkeypatch, request):
     budget_seconds = 240.0 if os.name == "nt" else 120.0
     deadline = time.monotonic() + budget_seconds
-    tmp_path = Path(tempfile.mkdtemp(prefix="mindie-upgrade-", dir=ROOT.parent))
+    # Use the pytest-owned tmp_path: a failed acceptance run must never leave
+    # multi-hundred-MiB component generations beside the Git checkout.
+    tmp_path = Path(tmp_path)
+    assert ROOT.resolve() not in tmp_path.resolve().parents
 
     def _force_writable(func, target_path, _exc):
         try:
@@ -53,16 +56,21 @@ def test_old_runtime_pair_survives_prepare_failure_and_upgrades(tmp_path, monkey
 
     def clean_native_directory():
         resolved = tmp_path.resolve()
-        assert resolved.parent == ROOT.parent.resolve() and resolved.name.startswith("mindie-upgrade-")
+        if not resolved.exists():
+            return
         # Component generations contain long third-party package paths and read-only git packfiles on Windows.
         raw = str(resolved)
         rm_target = (raw if raw.startswith("\\\\?\\") else f"\\\\?\\{raw}") if os.name == "nt" else resolved
-        shutil.rmtree(rm_target, onexc=_force_writable)
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(rm_target, onexc=_force_writable, ignore_errors=True)
+        else:
+            shutil.rmtree(rm_target, onerror=_force_writable, ignore_errors=True)
 
     request.addfinalizer(clean_native_directory)
     home, config_home, data_home = (tmp_path / name for name in ("home", "config", "data"))
     for path in (home, config_home, data_home):
-        path.mkdir()
+        # The shared autouse conftest fixture already creates these siblings.
+        path.mkdir(exist_ok=True)
     for name, value in {
         "HOME": home, "USERPROFILE": home, "MINDIE_CONFIG_HOME": config_home,
         "MINDIE_DATA_HOME": data_home, "MINDIE_AGENT_CONFIG": config_home / f"{HOST.lower()}.json",
@@ -70,6 +78,8 @@ def test_old_runtime_pair_survives_prepare_failure_and_upgrades(tmp_path, monkey
         "MINDIE_DIAGNOSTICS_CONFIG": config_home / "diagnostics.json",
     }.items():
         monkeypatch.setenv(name, str(value))
+    if _PREWARMED_UV_CACHE:
+        monkeypatch.setenv("UV_CACHE_DIR", _PREWARMED_UV_CACHE)
     monkeypatch.delenv("MINDIE_AGY_SOURCE_ROOT", raising=False)
     monkeypatch.delenv("MINDIE_WB_SOURCE_ROOT", raising=False)
 

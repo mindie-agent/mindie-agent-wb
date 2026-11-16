@@ -21,14 +21,17 @@ contribution-gated reporting status to `mindie_diagnostics.integration`.
 from __future__ import annotations
 
 import ast
+import errno
 import json
 import os
 from pathlib import Path
 import re
 import signal
+import socket
 import stat
 import subprocess
 import sys
+import urllib.error
 
 from paths import config_path, consent_path, diagnostics_config_path
 
@@ -72,6 +75,23 @@ _NON_REPORTABLE_MCP_EXC_NAMES = frozenset({
     "MachineDirectoryUnavailable",
     "HostQueueUnavailable",
     "CancelledError",
+})
+# Updater failures are classified from typed facts, never exception text: a DNS
+# failure (`resolver`) and a local prerequisite (`busy` / `deferred` /
+# `prerequisite`, a lock timeout, `ENOSPC`, or `PermissionError`) stays local.
+_UPDATE_TRANSPORT_CATEGORIES = frozenset({"temporary_network", "rate_limited", "deadline", "resolver"})
+_UPDATE_CREDENTIAL_CATEGORIES = frozenset({"authentication", "certificate"})
+_UPDATE_PERMISSION_CATEGORIES = frozenset({"permission", "hook_trust"})
+_UPDATE_PREREQUISITE_CATEGORIES = frozenset({"busy", "deferred", "prerequisite", "lock_timeout"})
+_UPDATE_CANCELLED_CATEGORIES = frozenset({"cancelled"})
+_UPDATE_TRANSPORT_CODES = frozenset({"release_transport_unavailable", "release_http_error"})
+_UPDATE_PREREQUISITE_ERRNOS = frozenset({
+    errno.ENOSPC, errno.EROFS, errno.EMFILE, errno.ENFILE, errno.EACCES,
+    errno.EPERM, errno.EBUSY, errno.EAGAIN, errno.EDQUOT,
+})
+_UPDATE_PREREQUISITE_NAMES = frozenset({
+    "LockTimeout", "LockUnavailable", "LockBusy", "LockNotAcquired",
+    "BusyError", "DeferredError", "PrerequisiteError", "QuotaExceededError",
 })
 _TB_FILE_RE = re.compile(
     r'^\s*File "([^"]+)", line (\d+), in ([A-Za-z_][A-Za-z0-9_]{0,99}|<module>|<lambda>|<listcomp>|<dictcomp>|<setcomp>|<genexpr>)\s*$'
@@ -288,11 +308,76 @@ def _chain_inner_diagnostic(exc):
     return None
 
 
+def _exception_chain(exception, limit: int = 32):
+    """Typed cause/context chain, bounded and cycle-safe."""
+    seen: set[int] = set()
+    pending = [exception]
+    while pending and len(seen) < limit:
+        current = pending.pop(0)
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        if getattr(current, "__cause__", None) is not None:
+            pending.append(current.__cause__)
+        if getattr(current, "__suppress_context__", False):
+            continue
+        if getattr(current, "__context__", None) is not None:
+            pending.append(current.__context__)
+
+
+def classify_update_failure(exception=None) -> tuple[str, bool, str]:
+    """Classify an owned updater failure from typed facts, never message text.
+
+    Returns `(category, reportable, reason_code)`. Transport, credentials,
+    cancellation, and local prerequisites stay visible locally and are never
+    reportable interior bugs; a broken helper or artifact still is.
+    """
+    if exception is None:
+        return "internal", False, "update_internal_failure"
+    import_error = False
+    for current in _exception_chain(exception):
+        code = getattr(current, "code", None)
+        if code in _UPDATE_TRANSPORT_CODES:
+            return "connectivity", False, "update_transport_unavailable"
+        category = getattr(current, "category", None)
+        if isinstance(category, str) and category.strip():
+            category = category.strip().casefold()
+            if category in _UPDATE_TRANSPORT_CATEGORIES:
+                return "connectivity", False, "update_transport_unavailable"
+            if category in _UPDATE_CREDENTIAL_CATEGORIES:
+                return "credentials", False, "update_credentials_required"
+            if category in _UPDATE_PERMISSION_CATEGORIES:
+                return "permission", False, "update_permission_required"
+            if category in _UPDATE_PREREQUISITE_CATEGORIES:
+                return "prerequisite", False, "update_prerequisite_unavailable"
+            if category in _UPDATE_CANCELLED_CATEGORIES:
+                return "cancelled", False, "update_cancelled"
+        if isinstance(current, (TimeoutError, ConnectionError, socket.gaierror,
+                                socket.herror, urllib.error.URLError)):
+            return "connectivity", False, "update_transport_unavailable"
+        if isinstance(current, (PermissionError, FileNotFoundError, NotADirectoryError)):
+            return "prerequisite", False, "update_prerequisite_unavailable"
+        if isinstance(current, OSError) and current.errno in _UPDATE_PREREQUISITE_ERRNOS:
+            return "prerequisite", False, "update_prerequisite_unavailable"
+        if type(current).__name__ in _UPDATE_PREREQUISITE_NAMES:
+            return "prerequisite", False, "update_prerequisite_unavailable"
+        import_error = import_error or isinstance(current, ImportError)
+    if import_error:
+        return "internal", True, "runtime_dependency_missing"
+    return "internal", True, "update_internal_failure"
+
+
 def failure(operation: str, stage: str, category: str, *, exception=None,
             config=None, revision=None, elapsed_ms=None, exit_code=None,
             reportable: bool = True, reason_code=None, substage=None) -> dict:
     if (inner := _chain_inner_diagnostic(exception)) is not None:
         return inner
+    if category == "update":
+        category, eligible, local_code = classify_update_failure(exception)
+        reportable = reportable and eligible
+        if reason_code is None:
+            reason_code = local_code
     try:
         from mindie_diagnostics.integration import record_failure
 
@@ -342,13 +427,19 @@ def is_internal_mcp_exception(exc: BaseException) -> bool:
         seen.add(id(cur))
         if isinstance(
             cur,
-            (ValueError, OSError, TimeoutError, subprocess.SubprocessError, KeyboardInterrupt, SystemExit, GeneratorExit),
+            (ValueError, OSError, TimeoutError, ConnectionError, subprocess.SubprocessError,
+             KeyboardInterrupt, SystemExit, GeneratorExit, socket.gaierror, socket.herror),
         ):
             return False
         if {cls.__name__ for cls in type(cur).__mro__} & _NON_REPORTABLE_MCP_EXC_NAMES:
             return False
+        if type(cur).__name__ in _UPDATE_PREREQUISITE_NAMES:
+            return False
+        if isinstance(getattr(cur, "errno", None), int) and cur.errno in _UPDATE_PREREQUISITE_ERRNOS:
+            return False
         cat = getattr(cur, "category", None)
         if isinstance(cat, str) and cat:
+            # A typed transport / prerequisite category is never an interior bug.
             return False
         if getattr(cur, "__cause__", None) is not None:
             pending.append(cur.__cause__)
