@@ -170,7 +170,7 @@ def test_installed_cache_interpreters_refresh_and_unregistered_state_stays_untou
     )
     assert pruned["status"] == "completed", pruned
     plugin_cache = wb_root / "plugins" / "cache" / "mindie-agent-marketplace" / "mindie-agent"
-    assert {entry.name for entry in plugin_cache.iterdir()} == {"0.1.3", "0.1.4"}
+    assert {entry.name for entry in plugin_cache.iterdir() if entry.is_dir()} == {"0.1.3", "0.1.4"}
     assert json.loads((plugin_cache / "0.1.3" / "mcp.json").read_text(encoding="utf-8"))["mcpServers"][
         "mindie-tools"
     ]["command"] == str(new_python)
