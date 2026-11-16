@@ -52,7 +52,6 @@ def test_uncertain_result_stays_unknown_in_receipt(session, tmp_path, monkeypatc
 
 @pytest.mark.parametrize("surface,name,arguments", [
     ("remote", "remote_auth", {"host": "auth.example", "port": 22, "action": "status"}),
-    ("tools", "mindie_status", {}),
     ("knowledge", "mindie_entry", {"op": "status"}),
 ])
 def test_admission_failure_does_not_terminate_stdio_server(tmp_path, monkeypatch, surface, name, arguments):
@@ -90,4 +89,57 @@ def test_admission_failure_does_not_terminate_stdio_server(tmp_path, monkeypatch
     assert replies[2]["result"]["structuredContent"]["execution"] == "not_started"
     assert replies[3]["result"] == {}
     assert replies[4]["result"]["tools"]
+
+
+def test_deterministic_tools_execute_without_meta_or_pretool_bind_while_knowledge_stays_gated(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGY_CONVERSATION_ID", raising=False)
+    monkeypatch.delenv("REMOTE_DEV_SESSION_ID", raising=False)
+    monkeypatch.setenv("REMOTE_DEV_AUTH_DIR", str(tmp_path / "auth"))
+    receipts = mcp_server.RemoteReceipts(tmp_path / "receipts.sqlite3")
+    remote_res = mcp_server.call_remote_surface(
+        "remote_auth", {"host": "auth.example", "port": 22, "action": "status"},
+        meta=None, receipts=receipts,
+    )
+    assert remote_res["isError"] is False
+    tools_res = mcp_server.call_tools_surface("diagnostics_status", {}, meta=None)
+    assert tools_res["isError"] is False
+    knowledge_res = mcp_server.call_knowledge_surface("mindie_entry", {"op": "status"}, meta=None)
+    assert knowledge_res["isError"] is True
+    req = {
+        "jsonrpc": "2.0", "id": 88, "method": "tools/call",
+        "params": {"name": "diagnostics_status", "arguments": {}},
+    }
+    first_rpc = mcp_server.handle_rpc(req, "tools")
+    assert first_rpc["result"]["isError"] is False
+    replay_rpc = mcp_server.handle_rpc(req, "tools")
+    assert replay_rpc["result"]["isError"] is True
+    seen_env = {}
+    orig_run = mcp_server.bounded_run
+
+    def spy_run(cmd, stdin_data="", **kwargs):
+        seen_env.update(kwargs.get("env") or {})
+        return orig_run(cmd, stdin_data, **kwargs)
+
+    monkeypatch.setattr(mcp_server, "bounded_run", spy_run)
+    coord_res = mcp_server.call_tools_surface(
+        "coordinator", {"argv": ["hosts", "--action", "list"], "cwd": str(tmp_path)},
+        meta={"workbuddy.ai/conversationId": "wb-coord-session"},
+    )
+    assert coord_res["isError"] is False, coord_res
+    assert "AGY_CONVERSATION_ID" not in seen_env
+    assert json.loads(seen_env["MINDIE_COORDINATOR_NATIVE_CALL"]) == {
+        "workbuddy.ai/conversationId": "wb-coord-session",
+    }
+    import os
+    from identity import publish_bind
+
+    rem_args = {"host": "auth.example", "port": 22, "action": "status"}
+    wb_sess = "wb-session-replay-guard"
+    publish_bind(wb_sess, "remote", "remote_auth", rem_args)
+    rem_req = {"jsonrpc": "2.0", "id": 99, "method": "tools/call", "params": {"name": "remote_auth", "arguments": rem_args}}
+    assert mcp_server.handle_rpc(rem_req, "remote")["result"]["isError"] is False
+    publish_bind(wb_sess, "remote", "remote_auth", rem_args)
+    assert mcp_server.handle_rpc(rem_req, "remote")["result"]["isError"] is True
+    assert mcp_server.handle_rpc({**rem_req, "id": 100}, "remote")["result"]["isError"] is False
+    assert os.environ["REMOTE_DEV_SESSION_ID"] == wb_sess
 

@@ -1,13 +1,15 @@
 """WorkBuddy MCP surfaces with selected-generation discovery and execution.
 
 [Role] Serve remote, deterministic component and explicitly enabled knowledge tools.
-[Invariants] Native PreToolUse binds or WorkBuddy call metadata establish identity;
-model arguments cannot supply it. Completed operations retain isError=False if
-local receipt/bind accounting fails, with receipt_warning/receipt_unconfirmed.
+[Invariants] Session identity is never taken from model arguments. Knowledge tools
+strictly require a PreToolUse bind or verified WorkBuddy call metadata; deterministic
+remote and component surfaces treat host binds/metadata as optional hints and fall back
+to a connection-scoped session ID. Completed operations keep isError=False with
+receipt_warning/receipt_unconfirmed if local SQLite accounting fails.
 [Timeouts & Locks] SQLite WAL + busy_timeout=5000; remote inner wait + 60s grace;
 component capture (16 MiB) remains independent of the response preview budget.
-[Side-Effect Policy] Discovery never activates knowledge; tools/call claims the
-native bind and executes once. The stable facade follows the selected profile.
+[Side-Effect Policy] Discovery never activates knowledge; deterministic tools run
+with zero pre-call session gate.
 """
 
 from __future__ import annotations
@@ -74,29 +76,15 @@ def _npu_top_observation_tools() -> list[dict]:
 
 
 def _knowledge_mcp_tools() -> list[dict]:
-    items = [
-        dict(
-            name="mindie_entry",
-            description="Native MindIE entry control for WorkBuddy (init/activate, status, deactivate, choose, sharing-enable/disable).",
-            inputSchema=dict(
-                type="object",
-                properties=dict(
-                    op=dict(type="string"),
-                    action=dict(type="string"),
-                    choice=dict(type="string", enum=["contribute", "disabled"]),
-                    repository=dict(type="string"),
-                    account=dict(type="string"),
-                    domain=dict(type="string"),
-                    project_root=dict(type="string"),
-                    arguments=dict(type="string"),
-                ),
-                additionalProperties=False,
-            ),
-        )
-    ]
+    props = {k: dict(type="string") for k in ("op", "action", "repository", "account", "domain", "project_root", "arguments")}
+    props["choice"] = dict(type="string", enum=["contribute", "disabled"])
+    items = [dict(
+        name="mindie_entry",
+        description="Native MindIE entry control for WorkBuddy (init/activate, status, deactivate, choose, sharing-enable/disable).",
+        inputSchema=dict(type="object", properties=props, additionalProperties=False),
+    )]
     for item in PRIVATE_KNOWLEDGE_CATALOG:
-        schema = dict(item["inputSchema"])
-        items.append(dict(name=item["name"], description=item["description"], inputSchema=schema))
+        items.append(dict(name=item["name"], description=item["description"], inputSchema=dict(item["inputSchema"])))
     return items
 
 
@@ -160,10 +148,20 @@ class RemoteReceipts:
         try:
             with db:
                 db.execute("BEGIN IMMEDIATE")
+                if db.execute("SELECT 1 FROM receipts WHERE call_id=?", (call_id,)).fetchone() is not None:
+                    raise ValueError("Duplicate MCP request; replay rejected")
                 db.execute(
-                    "INSERT OR REPLACE INTO receipts VALUES(?,?,?,?,?,?,?)",
+                    "INSERT INTO receipts VALUES(?,?,?,?,?,?,?)",
                     (call_id, session, tool, digest, "running", now, now),
                 )
+        finally:
+            db.close()
+
+    def set_session(self, call_id: str, session: str) -> None:
+        db = self._connect()
+        try:
+            with db:
+                db.execute("UPDATE receipts SET session=? WHERE call_id=?", (session, call_id))
         finally:
             db.close()
 
@@ -180,6 +178,28 @@ class RemoteReceipts:
             db.close()
 
 
+def _finalize_accounting(result: dict, succeeded: bool, *, receipt_store: RemoteReceipts | None = None,
+                         call_id: str | None = None, outcome: str | None = None,
+                         bind_id: str | None = None, config=None) -> dict:
+    if receipt_store is not None and call_id is not None:
+        try:
+            receipt_store.finish(call_id, outcome or ("succeeded" if succeeded else "failed"))
+        except (TimeoutError, OSError, sqlite3.Error) as exc:
+            if not succeeded and isinstance(exc, TimeoutError):
+                raise
+            if succeeded:
+                result = _attach_accounting_warning(result, "receipt_warning", exc)
+    if bind_id is not None:
+        try:
+            finish_bind(bind_id, succeeded, config=config)
+        except (TimeoutError, OSError, sqlite3.Error) as exc:
+            if not succeeded and isinstance(exc, TimeoutError):
+                raise
+            if succeeded:
+                result = _attach_accounting_warning(result, "bind_warning", exc)
+    return result
+
+
 def _attach_accounting_warning(result: dict, warning_key: str, exc: Exception) -> dict:
     structured = dict(result.get("structuredContent") or {})
     msg = f"{type(exc).__name__}: {exc}"
@@ -187,14 +207,8 @@ def _attach_accounting_warning(result: dict, warning_key: str, exc: Exception) -
     structured.setdefault("receipt_warning", msg)
     structured["receipt_unconfirmed"] = True
     result["structuredContent"] = structured
-    content = list(result.get("content") or [])
-    content.append(
-        dict(
-            type="text",
-            text=f"Operation completed, but local {warning_key} failed ({type(exc).__name__}). Do not repeat the call.",
-        )
-    )
-    result["content"] = content
+    text = f"Operation completed, but local {warning_key} failed ({type(exc).__name__}). Do not repeat the call."
+    result["content"] = [*(result.get("content") or []), dict(type="text", text=text)]
     return result
 
 
@@ -221,72 +235,45 @@ def component_tools() -> list[dict]:
         timeout_ms=dict(type="integer", minimum=1, maximum=600000, default=120000),
         max_output_tokens=dict(type="integer", minimum=1, maximum=262144, default=16384),
     )
-    items = [
-        dict(
-            name="mindie_status",
-            description="Read factual local MindIE configuration and this WorkBuddy conversation's lease status.",
-            inputSchema=dict(type="object", properties={}, additionalProperties=False),
-            annotations=dict(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
-        )
-    ]
+    items = [dict(
+        name="mindie_status",
+        description="Read factual local MindIE configuration and this WorkBuddy conversation's lease status.",
+        inputSchema=dict(type="object", properties={}, additionalProperties=False),
+        annotations=dict(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+    )]
     for name, desc in COMPONENT_DESCRIPTIONS.items():
-        items.append(
-            dict(
-                name=name,
-                description=desc,
-                inputSchema=dict(
-                    type="object",
-                    additionalProperties=False,
-                    required=["argv"],
-                    properties=dict(
-                        argv=dict(type="array", items=dict(type="string")),
-                        **limits,
-                    ),
-                ),
-                annotations=dict(
-                    readOnlyHint=name == "npu_top",
-                    destructiveHint=name not in {"npu_top", "debugger"},
-                    openWorldHint=True,
-                ),
-            )
-        )
+        items.append(dict(
+            name=name, description=desc,
+            inputSchema=dict(type="object", additionalProperties=False, required=["argv"],
+                             properties=dict(argv=dict(type="array", items=dict(type="string")), **limits)),
+            annotations=dict(readOnlyHint=name == "npu_top", destructiveHint=name not in {"npu_top", "debugger"}, openWorldHint=True),
+        ))
     items.extend(_npu_top_observation_tools())
-    items.append(
-        dict(
-            name="diagnostics_status",
-            description="Inspect local MindIE diagnostic/reporting status without starting a worker or contacting GitHub.",
-            inputSchema=dict(
-                type="object",
-                additionalProperties=False,
-                properties=dict(config=dict(type="string"), **limits),
-            ),
-            annotations=dict(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
-        )
-    )
-    items.append(
-        dict(
-            name="diagnostics_bundle",
-            description="Export a bounded, sanitized local diagnostic support bundle without uploading it.",
-            inputSchema=dict(
-                type="object",
-                additionalProperties=False,
-                required=[],
-                properties=dict(
-                    root=dict(type="string"),
-                    operation_id=dict(type="string"),
-                    incident_id=dict(type="string"),
-                    output=dict(type="string"),
-                    **limits,
-                ),
-            ),
-            annotations=dict(readOnlyHint=False, destructiveHint=False, openWorldHint=False),
-        )
-    )
+    items.append(dict(
+        name="diagnostics_status",
+        description="Inspect local MindIE diagnostic/reporting status without starting a worker or contacting GitHub.",
+        inputSchema=dict(type="object", additionalProperties=False, properties=dict(config=dict(type="string"), **limits)),
+        annotations=dict(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+    ))
+    items.append(dict(
+        name="diagnostics_bundle",
+        description="Export a bounded, sanitized local diagnostic support bundle without uploading it.",
+        inputSchema=dict(type="object", additionalProperties=False, required=[], properties=dict(
+            root=dict(type="string"), operation_id=dict(type="string"), incident_id=dict(type="string"), output=dict(type="string"), **limits)),
+        annotations=dict(readOnlyHint=False, destructiveHint=False, openWorldHint=False),
+    ))
     return items
 
 
 def knowledge_tools() -> list[dict]:
     return _knowledge_mcp_tools()
+
+
+_CONNECTION_SESSION_ID = os.environ.get("MINDIE_MCP_CONNECTION_ID") or f"wb-mcp-{os.getpid()}-{uuid.uuid4().hex[:12]}"
+
+
+def _rpc_receipt_id(surface: str, rpc_id) -> str:
+    return str(uuid.uuid4()) if rpc_id is None else f"{_CONNECTION_SESSION_ID}:{surface}:rpc:{json.dumps(rpc_id, sort_keys=True)}"
 
 
 def _resolve_claim(
@@ -297,7 +284,21 @@ def _resolve_claim(
     meta: dict | None = None,
     config=None,
 ) -> dict:
-    return claim_bind(surface, tool_name, arguments, meta=meta, config=config)
+    try:
+        return claim_bind(surface, tool_name, arguments, meta=meta, config=config)
+    except TimeoutError:
+        raise
+    except ValueError as exc:
+        if surface == "knowledge":
+            raise
+        if "no native PreToolUse bind" in str(exc) or "no active PreToolUse bind" in str(exc):
+            return {
+                "session": _CONNECTION_SESSION_ID,
+                "bind_id": None,
+                "workspace_root": None,
+                "transcript_path": None,
+            }
+        raise
 
 
 def _resolve_component_argv(adapter: dict, component: str, *, allow_pythonpath: bool = False) -> list[str]:
@@ -374,6 +375,7 @@ def call_remote_surface(
     arguments: dict | None = None,
     *,
     meta: dict | None = None,
+    rpc_id=None,
     config=None,
     receipts: RemoteReceipts | None = None,
 ) -> dict:
@@ -381,21 +383,36 @@ def call_remote_surface(
     profile = _resolve_remote_profile()
     os.environ["REMOTE_DEV_HARNESS_PROFILE"] = profile
     raw_args = dict(arguments or {})
-    try:
-        claim = _resolve_claim("remote", name, raw_args, meta=meta, config=config)
-    except Exception as exc:
-        return _admission_failure(exc)
     exec_args = dict(raw_args)
     if "yield_time_ms" in exec_args and type(exec_args["yield_time_ms"]) is int:
         exec_args["yield_time_ms"] = min(exec_args["yield_time_ms"], MAX_YIELD_TIME_MS)
-    session, bind_id = claim["session"], claim.get("bind_id")
     receipt_store = receipts or RemoteReceipts(remote_receipts_path(config))
-    call_id = str(uuid.uuid4())
+    call_id = _rpc_receipt_id("remote", rpc_id)
+    reserved = False
     try:
+        receipt_store.begin(call_id, _CONNECTION_SESSION_ID, name, exec_args)
+        reserved = True
+        claim = _resolve_claim("remote", name, raw_args, meta=meta, config=config)
+        session, bind_id = claim["session"], claim.get("bind_id")
+        if session != _CONNECTION_SESSION_ID and hasattr(receipt_store, "set_session"):
+            receipt_store.set_session(call_id, session)
         root = state_dir(config) / "remote" / session
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        receipt_store.begin(call_id, session, name, exec_args)
     except Exception as exc:
+        if reserved:
+            try:
+                receipt_store.finish(call_id, "failed")
+            except TimeoutError:
+                raise
+            except (OSError, sqlite3.Error):
+                pass
+        if "claim" in locals() and claim.get("bind_id") is not None:
+            try:
+                finish_bind(claim["bind_id"], False, config=config)
+            except TimeoutError:
+                raise
+            except (OSError, sqlite3.Error):
+                pass
         return _admission_failure(exc)
     os.environ["REMOTE_DEV_SESSION_ID"] = session
     os.environ["REMOTE_DEV_STATE_DIR"] = str(root)
@@ -434,23 +451,10 @@ def call_remote_surface(
             isError=True,
         )
 
-    try:
-        receipt_store.finish(call_id, outcome)
-    except (TimeoutError, OSError, sqlite3.Error) as exc:
-        if not succeeded and isinstance(exc, TimeoutError):
-            raise
-        if succeeded:
-            result = _attach_accounting_warning(result, "receipt_warning", exc)
-
-    if bind_id is not None:
-        try:
-            finish_bind(bind_id, succeeded, config=config)
-        except (TimeoutError, OSError, sqlite3.Error) as exc:
-            if not succeeded and isinstance(exc, TimeoutError):
-                raise
-            if succeeded:
-                result = _attach_accounting_warning(result, "bind_warning", exc)
-    return result
+    return _finalize_accounting(
+        result, succeeded, receipt_store=receipt_store, call_id=call_id,
+        outcome=outcome, bind_id=bind_id, config=config,
+    )
 
 
 def call_tools_surface(
@@ -458,16 +462,33 @@ def call_tools_surface(
     arguments: dict | None = None,
     *,
     meta: dict | None = None,
+    rpc_id=None,
     config=None,
+    receipts: RemoteReceipts | None = None,
 ) -> dict:
     args = dict(arguments or {})
     if name == "debugger" and "argv" not in args and isinstance(args.get("action"), str):
         action = args.pop("action")
         code = args.pop("code", None)
         args = {"argv": [action, str(code)] if code is not None else [action]}
+    receipt_store = receipts or (RemoteReceipts(remote_receipts_path(config)) if rpc_id is not None else None)
+    call_id = _rpc_receipt_id("tools", rpc_id)
+    reserved = False
     try:
+        if receipt_store is not None:
+            receipt_store.begin(call_id, _CONNECTION_SESSION_ID, name, args)
+            reserved = True
         claim = _resolve_claim("tools", name, args, meta=meta, config=config)
+        if receipt_store is not None and claim["session"] != _CONNECTION_SESSION_ID and hasattr(receipt_store, "set_session"):
+            receipt_store.set_session(call_id, claim["session"])
     except Exception as exc:
+        if reserved and receipt_store is not None:
+            try:
+                receipt_store.finish(call_id, "failed")
+            except TimeoutError:
+                raise
+            except (OSError, sqlite3.Error):
+                pass
         return _admission_failure(exc)
     session, bind_id = claim["session"], claim.get("bind_id")
     succeeded = False
@@ -524,7 +545,8 @@ def call_tools_surface(
                 child_env["WORKBUDDY_SESSION_ID"] = session
                 child_env["WB_CONVERSATION_ID"] = session
                 child_env["CODEBUDDY_SESSION_ID"] = session
-                child_env["AGY_CONVERSATION_ID"] = session
+                if component == "coordinator":
+                    child_env["MINDIE_COORDINATOR_NATIVE_CALL"] = canonical({"workbuddy.ai/conversationId": session})
             use_debugger_repo = False
             if component == "debugger":
                 dbg_env = os.environ.get("MINDIE_DEBUGGER_REPO")
@@ -600,15 +622,10 @@ def call_tools_surface(
             isError=True,
         )
 
-    if bind_id is not None:
-        try:
-            finish_bind(bind_id, succeeded, config=config)
-        except (TimeoutError, OSError, sqlite3.Error) as exc:
-            if not succeeded and isinstance(exc, TimeoutError):
-                raise
-            if succeeded:
-                result = _attach_accounting_warning(result, "bind_warning", exc)
-    return result
+    return _finalize_accounting(
+        result, succeeded, receipt_store=receipt_store, call_id=call_id,
+        bind_id=bind_id, config=config,
+    )
 
 
 def call_knowledge_surface(
@@ -643,56 +660,30 @@ def call_knowledge_surface(
                 payload = activate(session, workspace, domain=args.get("domain"), config=config)
             elif op in {"choose", "sharing-enable", "sharing-disable"}:
                 from setup import configure_community
-
                 enabled = args.get("choice") == "contribute" if op == "choose" else (op == "sharing-enable")
-                payload = configure_community(
-                    config=config,
-                    enabled=enabled,
-                    fork=args.get("repository"),
-                    account=args.get("account"),
-                    project_root=workspace,
-                )
+                payload = configure_community(config=config, enabled=enabled, fork=args.get("repository"),
+                                              account=args.get("account"), project_root=workspace)
             elif op in {"sharing-status", "reporting-status", "recover"}:
                 payload = status_facts(session, config=config)
             else:
                 raise ValueError(f"unsupported mindie_entry op: {op}")
             succeeded = payload.get("status") != "partial" and not payload.get("reporting_error")
-            result = dict(
-                content=[dict(type="text", text=canonical(payload))],
-                structuredContent=payload,
-                isError=not succeeded,
-            )
+            result = dict(content=[dict(type="text", text=canonical(payload))], structuredContent=payload, isError=not succeeded)
         else:
             payload = execute_knowledge_tool(name, args, session=session)
             is_error = False
             if name == "knowledge_distill":
                 from mindie_knowledge.graded.distill import result_view
-
                 payload, is_error = result_view(payload)
             elif name == "knowledge_sync":
                 is_error = payload.get("status") != "ok"
             succeeded = not is_error
-            result = dict(
-                content=[dict(type="text", text=canonical(payload))],
-                structuredContent=payload,
-                isError=bool(is_error),
-            )
+            result = dict(content=[dict(type="text", text=canonical(payload))], structuredContent=payload, isError=bool(is_error))
     except Exception as exc:
-        result = dict(
-            content=[dict(type="text", text=f"{type(exc).__name__}: {exc}")],
-            structuredContent=dict(error=str(exc), error_type=type(exc).__name__),
-            isError=True,
-        )
+        result = dict(content=[dict(type="text", text=f"{type(exc).__name__}: {exc}")],
+                      structuredContent=dict(error=str(exc), error_type=type(exc).__name__), isError=True)
 
-    if bind_id is not None:
-        try:
-            finish_bind(bind_id, succeeded, config=config)
-        except (TimeoutError, OSError, sqlite3.Error) as exc:
-            if not succeeded and isinstance(exc, TimeoutError):
-                raise
-            if succeeded:
-                result = _attach_accounting_warning(result, "bind_warning", exc)
-    return result
+    return _finalize_accounting(result, succeeded, bind_id=bind_id, config=config)
 
 
 def handle_rpc(request: dict, surface: str = "tools", *, config=None) -> dict | None:
@@ -739,11 +730,11 @@ def handle_rpc(request: dict, surface: str = "tools", *, config=None) -> dict | 
         if not isinstance(tool_name, str) or not tool_name:
             return dict(jsonrpc="2.0", id=req_id, error=dict(code=-32602, message="Invalid tool name"))
         if surface == "remote":
-            out = call_remote_surface(tool_name, arguments, meta=meta, config=config)
+            out = call_remote_surface(tool_name, arguments, meta=meta, rpc_id=req_id, config=config)
         elif surface == "knowledge":
             out = call_knowledge_surface(tool_name, arguments, meta=meta, config=config)
         else:
-            out = call_tools_surface(tool_name, arguments, meta=meta, config=config)
+            out = call_tools_surface(tool_name, arguments, meta=meta, rpc_id=req_id, config=config)
         return dict(jsonrpc="2.0", id=req_id, result=out)
     return dict(jsonrpc="2.0", id=req_id, error=dict(code=-32601, message=f"Method not found: {method}"))
 
@@ -783,10 +774,13 @@ def main(argv: list[str] | None = None) -> int:
     surface = args[0] if args else "tools"
     if "--once" not in argv:
         from remote_dev.mcp.catalog_refresh import profile_selection, serve_selected
-        with hold_runtime_lease():
-            return serve_selected(lambda: profile_selection(
+        def _select():
+            sel_argv, sel_env = profile_selection(
                 config_path(), HERE, surface, config_env="MINDIE_AGENT_CONFIG", plugin_env="WB_PLUGIN_ROOT",
-            ))
+            )
+            return sel_argv, {**sel_env, "MINDIE_MCP_CONNECTION_ID": _CONNECTION_SESSION_ID}
+        with hold_runtime_lease():
+            return serve_selected(_select)
     return serve(surface)
 
 
