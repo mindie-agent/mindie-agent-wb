@@ -216,6 +216,8 @@ def component_update_lock(root: str | Path | None = None, *, timeout: float = UP
                     msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
                     locked = True
                     break
+                except TimeoutError:
+                    raise
                 except OSError:
                     if time.monotonic() >= deadline:
                         break
@@ -338,12 +340,10 @@ def _refresh_mcp(payload: dict, new_python: str) -> bool:
     return changed
 
 
-def _cache_manifest_blocker(cache_root: Path, target: Path) -> str | None:
-    """Why `target` must not be read or rewritten, or `None` when it is safe.
-
-    Every segment below the managed cache root must be a real entry: a `hooks/`
-    symlink or junction can point at an external Git checkout.
-    """
+def _cache_manifest_blocker(
+    cache_root: Path, target: Path, config: str | Path | None = None
+) -> str | None:
+    """Why `target` must not be read or rewritten, or `None` when it is safe."""
     root, path = Path(cache_root), Path(target)
     try:
         path.relative_to(root)
@@ -367,7 +367,8 @@ def _cache_manifest_blocker(cache_root: Path, target: Path) -> str | None:
         from mindie_knowledge.storage.lifecycle import has_git_ancestor, is_within_roots
         if has_git_ancestor(resolved):
             return "Git checkout"
-        if is_within_roots(resolved, protected_source_roots()):
+        roots = protected_source_roots(config_home=_config_homes_for_sweep(config))
+        if is_within_roots(resolved, roots):
             return "protected source root"
     except TimeoutError:
         raise
@@ -415,7 +416,7 @@ def refresh_workbuddy_cache_python(
             target = version_dir / relative
             if not target.is_file():
                 continue
-            blocker = _cache_manifest_blocker(root, target)
+            blocker = _cache_manifest_blocker(root, target, config=config)
             if blocker is not None:
                 report["warnings"].append(f"{target.name}: skipped ({blocker})")
                 continue
@@ -433,7 +434,7 @@ def refresh_workbuddy_cache_python(
                 continue
             # Re-verify immediately before the rename: a link swapped in after
             # the read must not redirect the atomic replace.
-            recheck = _cache_manifest_blocker(root, target)
+            recheck = _cache_manifest_blocker(root, target, config=config)
             if recheck is not None:
                 report["warnings"].append(f"{target.name}: skipped ({recheck})")
                 continue
@@ -526,7 +527,7 @@ def prune_workbuddy_plugin_caches(
             versions = sorted(
                 [entry for entry in plugin_dir.iterdir()
                  if entry.is_dir() and not entry.is_symlink()
-                 and _CACHE_VERSION.match(entry.name)],
+                 and _CACHE_VERSION.fullmatch(entry.name)],
                 # Rank by formal version, not directory mtime: refreshing a
                 # pinned launcher must not promote an older generation.
                 key=lambda entry: (_version_key(entry.name), entry.stat().st_mtime),
@@ -540,7 +541,7 @@ def prune_workbuddy_plugin_caches(
         retained = set(pinned)
         active_key = (_version_key(active_version)
                       if isinstance(active_version, str)
-                      and _CACHE_VERSION.match(active_version) else None)
+                      and _CACHE_VERSION.fullmatch(active_version) else None)
         active = plugin_dir / active_version if active_key is not None else None
         if active is not None and active.is_dir() and not active.is_symlink():
             retained.add(active_version)
@@ -615,22 +616,26 @@ def _caller_config_pins(config: str | Path | None) -> list[str]:
 
 def _runtime_root_blocker(runtimes: Path, config: str | Path | None) -> str | None:
     """Why the component-runtimes root must not be pruned, or `None` when safe."""
-    linked = _linked_segment(data_home(), runtimes)
-    if linked is not None:
-        return f"linked path: {linked.name[:32]}"
+    probe = Path(os.path.abspath(os.fspath(runtimes)))
+    for cand in (probe, *probe.parents):
+        if sys.platform == "darwin" and cand.parent == Path("/") and cand.name in {"var", "tmp", "etc"}:
+            continue
+        if cand.is_symlink() or _is_junction(cand):
+            return f"linked path: {cand.name[:32]}"
     try:
+        resolved = runtimes.resolve()
         from mindie_knowledge.storage.legacy_roots import protected_source_roots
         from mindie_knowledge.storage.lifecycle import has_git_ancestor, is_within_roots
-        if has_git_ancestor(runtimes):
+        if has_git_ancestor(runtimes) or has_git_ancestor(resolved):
             return "Git checkout ancestor"
         roots = protected_source_roots(config_home=_config_homes_for_sweep(config))
-        if is_within_roots(runtimes, roots):
+        if is_within_roots(runtimes, roots) or is_within_roots(resolved, roots):
             return "protected source root"
     except TimeoutError:
         raise
     except ImportError:
         return None
-    except (AttributeError, OSError):
+    except (AttributeError, OSError, RuntimeError):
         return "unverifiable"
     return None
 
@@ -675,80 +680,74 @@ def post_update_maintenance(
     runtimes = state_dir(config) / "component-runtimes"
     blocker = _runtime_root_blocker(runtimes, config) if runtimes.is_dir() else None
     if blocker is not None:
-        # A runtimes root reached through a link, a Git checkout, or a user
-        # source pin is foreign storage: refuse the whole first phase.
         report["warnings"].append(f"component prune: skipped ({blocker})")
         report["component_prune"] = {"status": "protected_root", "warnings": [blocker]}
-    if runtimes.is_dir() and blocker is None:
-        keep_paths: list[str] = _caller_config_pins(config)
-        try:
-            from mindie_knowledge.storage import owning_dir
-        except ImportError:
-            owning_dir = None
-        for interpreter in (new_python, previous_python):
-            if not interpreter:
-                continue
-            path = str(Path(interpreter).expanduser())
+
+    config_homes = _config_homes_for_sweep(config)
+    borrowed_owners, complete = _borrowed_runtime_owners(config_homes)
+    keep_paths: list[str] = _caller_config_pins(config)
+    try:
+        from mindie_knowledge.storage import acquire_runtime_lease, owning_dir
+    except ImportError:
+        acquire_runtime_lease = owning_dir = None
+    for interpreter in (new_python, previous_python):
+        if interpreter:
+            path = _strip_win_prefix(os.fspath(Path(interpreter).expanduser()))
             keep_paths.append(path)
             owner = owning_dir(path) if owning_dir is not None else None
             if owner is not None:
-                keep_paths.append(str(owner))
-        try:
-            from mindie_knowledge.storage import prune_component_runtimes
+                clean_owner = Path(_strip_win_prefix(os.fspath(owner)))
+                borrowed_owners.append(clean_owner)
+                keep_paths.append(str(clean_owner))
+    keep_paths.extend(str(owner) for owner in borrowed_owners)
 
-            report["component_prune"] = prune_component_runtimes(
-                runtimes,
-                keep_paths=keep_paths,
-                keep_recent_verified=2,
-                budget_seconds=remaining(3.0),
-                deadline=deadline,
-            )
-            report["warnings"].extend(_warnings_for(report["component_prune"]))
-            if report["component_prune"].get("deferred_dirs"):
-                report["warnings"].append("component runtimes deferred in use")
-        except TimeoutError as exc:
-            report["warnings"].append(f"component prune: {type(exc).__name__}: {exc}")
-        except Exception as exc:
-            report["warnings"].append(f"component prune: {type(exc).__name__}: {exc}")
+    with contextlib.ExitStack() as leases:
+        leased = complete and acquire_runtime_lease is not None
+        if not complete:
+            report["warnings"].append("storage sweep: skipped (incomplete config scan)")
+        seen_owners: set[str] = set()
+        for owner in borrowed_owners:
+            key = os.path.normcase(os.path.abspath(os.fspath(owner)))
+            if key in seen_owners or not owner.is_dir() or acquire_runtime_lease is None:
+                continue
+            seen_owners.add(key)
+            try:
+                leases.enter_context(acquire_runtime_lease(owner))
+            except TimeoutError:
+                raise
+            except (OSError, RuntimeError) as exc:
+                leased = False
+                report["warnings"].append(f"storage sweep: lease {type(exc).__name__}")
 
-    try:
-        from mindie_knowledge.storage import acquire_runtime_lease, owning_dir, sweep_legacy_installations
+        if runtimes.is_dir() and blocker is None and complete:
+            try:
+                from mindie_knowledge.storage import prune_component_runtimes
 
-        config_homes = _config_homes_for_sweep(config)
-        borrowed_owners, complete = _borrowed_runtime_owners(config_homes)
-        for interpreter in (new_python, previous_python):
-            if interpreter:
-                owner = owning_dir(_strip_win_prefix(os.fspath(Path(interpreter).expanduser())))
-                if owner is not None:
-                    borrowed_owners.append(Path(_strip_win_prefix(os.fspath(owner))))
-        with contextlib.ExitStack() as leases:
-            leased = complete
-            if not complete:
-                report["warnings"].append("legacy sweep: skipped (incomplete config scan)")
-            seen_owners: set[str] = set()
-            for owner in borrowed_owners:
-                key = os.path.normcase(os.path.abspath(os.fspath(owner)))
-                if key in seen_owners or not owner.is_dir():
-                    continue
-                seen_owners.add(key)
-                try:
-                    leases.enter_context(acquire_runtime_lease(owner))
-                except TimeoutError:
-                    raise
-                except (OSError, RuntimeError) as exc:
-                    leased = False
-                    report["warnings"].append(f"legacy sweep: lease {type(exc).__name__}")
-            if leased:
+                report["component_prune"] = prune_component_runtimes(
+                    runtimes, keep_paths=keep_paths, keep_recent_verified=2,
+                    budget_seconds=remaining(3.0), deadline=deadline)
+                report["warnings"].extend(_warnings_for(report["component_prune"]))
+                if report["component_prune"].get("deferred_dirs"):
+                    report["warnings"].append("component runtimes deferred in use")
+            except TimeoutError as exc:
+                report["warnings"].append(f"component prune: {type(exc).__name__}: {exc}")
+            except Exception as exc:
+                report["warnings"].append(f"component prune: {type(exc).__name__}: {exc}")
+
+        if leased:
+            try:
+                from mindie_knowledge.storage import sweep_legacy_installations
+
                 report["legacy_sweep"] = sweep_legacy_installations(
                     config_home=config_homes, data_home=data_home(),
                     budget_seconds=remaining(5.0), deadline=deadline)
                 report["warnings"].extend(_warnings_for(report["legacy_sweep"]))
                 if report["legacy_sweep"].get("deferred_dirs"):
                     report["warnings"].append("legacy storage deferred in use")
-    except TimeoutError as exc:
-        report["warnings"].append(f"legacy sweep: {type(exc).__name__}: {exc}")
-    except Exception as exc:
-        report["warnings"].append(f"legacy sweep: {type(exc).__name__}: {exc}")
+            except TimeoutError as exc:
+                report["warnings"].append(f"legacy sweep: {type(exc).__name__}: {exc}")
+            except Exception as exc:
+                report["warnings"].append(f"legacy sweep: {type(exc).__name__}: {exc}")
 
     if report["warnings"]:
         report["status"] = "partial"
