@@ -68,7 +68,8 @@ def test_old_runtime_pair_survives_prepare_failure_and_upgrades(tmp_path, monkey
     request.addfinalizer(clean_native_directory)
     home, config_home, data_home = (tmp_path / name for name in ("home", "config", "data"))
     for path in (home, config_home, data_home):
-        path.mkdir()
+        # The shared autouse conftest fixture already creates these siblings.
+        path.mkdir(exist_ok=True)
     for name, value in {
         "HOME": home, "USERPROFILE": home, "MINDIE_CONFIG_HOME": config_home,
         "MINDIE_DATA_HOME": data_home, "MINDIE_AGENT_CONFIG": config_home / f"{HOST.lower()}.json",

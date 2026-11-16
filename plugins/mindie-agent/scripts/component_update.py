@@ -610,11 +610,13 @@ def _check_locked(
         result["receipt_warning"] = post_promote_warn
         result["receipt_unconfirmed"] = True
     if maintenance_warnings:
+        # Principle 14: a deferred post-switch GC is not a lost primary
+        # receipt. The profile and state receipts are already confirmed on
+        # disk, so report ordinary cleanup deferral as `cleanup_warning` only.
         warning = "; ".join(maintenance_warnings)
-        result["receipt_warning"] = (
-            f"{result['receipt_warning']}; {warning}" if result.get("receipt_warning") else warning
+        result["cleanup_warning"] = (
+            f"{result['cleanup_warning']}; {warning}" if result.get("cleanup_warning") else warning
         )
-        result["receipt_unconfirmed"] = True
     if sync_feeds:
         try:
             if community_config_path(cfg_file).is_file() and eng_file.is_file():
@@ -640,6 +642,9 @@ def _check_locked(
         if result.get("receipt_unconfirmed"):
             status_payload["receipt_warning"] = result.get("receipt_warning")
             status_payload["receipt_unconfirmed"] = True
+        if result.get("cleanup_warning"):
+            # Cleanup deferral stays visible without claiming a lost receipt.
+            status_payload["cleanup_warning"] = result["cleanup_warning"]
         with _status_file_lock(status_file):
             atomic_write_json(status_file, status_payload)
     except (TimeoutError, OSError) as exc:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 from pathlib import Path
@@ -306,7 +307,7 @@ def _fake_artifact(root: Path, fake_python: Path) -> dict:
     }
 
 
-def test_component_switch_stays_updated_when_follow_up_cache_or_gc_is_occupied(tmp_path, monkeypatch):
+def test_post_switch_gc_deferral_is_cleanup_warning_not_an_unconfirmed_receipt(tmp_path, monkeypatch):
     config = tmp_path / "config" / "wb.json"
     monkeypatch.setenv("MINDIE_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("MINDIE_DATA_HOME", str(tmp_path / "data"))
@@ -327,13 +328,186 @@ def test_component_switch_stays_updated_when_follow_up_cache_or_gc_is_occupied(t
     )
     result = component_update.check(config=config, source=REPO_ROOT)
 
+    # Principle 14: the primary profile/state receipts were written, so an
+    # ordinary post-switch GC deferral must never claim a lost receipt.
     assert result["status"] == "updated"
-    assert result["receipt_unconfirmed"] is True
-    assert "deferred in use" in result["receipt_warning"]
+    assert "receipt_unconfirmed" not in result
+    assert "receipt_warning" not in result
+    assert "deferred in use" in result["cleanup_warning"]
     status = json.loads((tmp_path / "data" / "wb-component-update-status.json").read_text(encoding="utf-8"))
     assert status["status"] == "updated"
-    assert status["receipt_unconfirmed"] is True
-    assert "deferred in use" in status["receipt_warning"]
+    assert "receipt_unconfirmed" not in status
+    assert "deferred in use" in status["cleanup_warning"]
+
+
+def test_custom_config_sweep_preserves_runtime_borrowed_by_default_codex_profile():
+    """Astra R1 P1 #1: a narrowed `--config` must not hide sibling borrow pins."""
+    data = paths.data_home()
+    default_home = paths.config_home()
+    custom_dir = default_home / "profiles" / "team"
+    custom_dir.mkdir(parents=True, exist_ok=True)
+    custom_config = custom_dir / "wb.json"
+
+    runtimes = data / "wb-state" / "component-runtimes"
+    borrowed = _make_generation(runtimes, "borrowed-codex", age=40000.0)
+    pinned = _make_generation(runtimes, "custom-pinned", age=42000.0)
+    disposable = _make_generation(runtimes, "disposable", age=50000.0)
+    _make_generation(runtimes, "verified-1", age=9000.0)
+    _make_generation(runtimes, "verified-2", age=8500.0)
+
+    custom_config.write_text(json.dumps({"package_dir": str(pinned)}), encoding="utf-8")
+    (default_home / "codex.json").write_text(
+        json.dumps({"python": str(borrowed / ".venv" / "bin" / "python")}), encoding="utf-8"
+    )
+    installed = data / "installed-venv" / "bin"
+    installed.mkdir(parents=True)
+    new_python = installed / "python"
+    new_python.write_text("", encoding="utf-8")
+
+    report = storage_lifecycle.post_update_maintenance(
+        custom_config, new_python, active_version="0.1.14", budget_seconds=20.0,
+    )
+
+    assert report["status"] == "completed", report
+    # The borrowed generation survives both phases, including the legacy sweep
+    # that used to read only `custom_dir`.
+    assert borrowed.is_dir(), report["legacy_sweep"]
+    assert pinned.is_dir(), report["legacy_sweep"]
+    assert not disposable.exists()
+    # Both the sibling `codex.json` borrow pin and the caller's own profile pin
+    # were visible to the sweep.
+    assert report["legacy_sweep"]["protected_roots"] >= 4
+
+
+def test_cache_prune_cleans_trash_and_keeps_formal_rollback_version():
+    """Astra R1 P1 #2: `.trash-*` and non-semver names never consume the slot."""
+    wb_root = paths.workbuddy_config_dir()
+    old_python = Path("/opt/mindie/old/bin/python")
+    _make_cache_version(wb_root, "0.1.14", old_python)
+    _make_cache_version(wb_root, "0.1.13", old_python)
+    _make_cache_version(wb_root, ".trash-0.1.12-deadbeef", old_python)
+    _make_cache_version(wb_root, "scratch-unranked", old_python)
+
+    report = storage_lifecycle.prune_workbuddy_plugin_caches(
+        wb_dir=wb_root, active_version="0.1.14", budget_seconds=10.0,
+    )
+
+    plugin_cache = wb_root / "plugins" / "cache" / "mindie-agent-marketplace" / "mindie-agent"
+    remaining = {entry.name for entry in plugin_cache.iterdir()}
+    assert ".trash-0.1.12-deadbeef" not in remaining, remaining
+    assert remaining == {"0.1.13", "0.1.14", "scratch-unranked"}, remaining
+    assert report["reclaimed_trash"] >= 1
+    assert str(plugin_cache / "0.1.13") in report["kept"], report
+
+
+def test_cache_refresh_never_writes_through_a_linked_hooks_directory(tmp_path):
+    """Astra R1 P1 #3: intermediate links must never reach an external checkout."""
+    wb_root = paths.workbuddy_config_dir()
+    old_python = Path("/opt/mindie/old/bin/python")
+    new_python = Path("/opt/mindie/new/bin/python")
+    external = tmp_path / "external-hooks-checkout"
+    (external / ".git").mkdir(parents=True)
+    (external / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    external_hooks = external / "hooks.json"
+    external_hooks.write_text(
+        json.dumps(
+            {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": f'"{old_python}" -I hook'}]}]}},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    before = external_hooks.read_bytes()
+
+    cache = wb_root / "plugins" / "cache" / "mindie-agent-marketplace" / "mindie-agent" / "0.1.14"
+    cache.mkdir(parents=True)
+    (cache / "mcp.json").write_text(
+        json.dumps({"mcpServers": {"mindie-tools": {"command": str(old_python)}}}), encoding="utf-8"
+    )
+    try:
+        (cache / "hooks").symlink_to(external, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this host cannot create directory symlinks")
+
+    refresh = storage_lifecycle.refresh_workbuddy_cache_python(new_python, wb_dir=wb_root)
+
+    assert external_hooks.read_bytes() == before
+    assert any("skipped" in warning for warning in refresh["warnings"]), refresh
+    assert str(cache / "mcp.json") in refresh["updated"], refresh
+    assert json.loads((cache / "mcp.json").read_text(encoding="utf-8"))["mcpServers"][
+        "mindie-tools"
+    ]["command"] == str(new_python)
+
+
+def test_component_prune_refuses_a_linked_runtimes_root():
+    data = paths.data_home()
+    state = data / "wb-state"
+    real = state / "real-runtimes"
+    _make_generation(real, "obsolete", age=50000.0)
+    runtimes = state / "component-runtimes"
+    state.mkdir(parents=True, exist_ok=True)
+    try:
+        runtimes.symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this host cannot create directory symlinks")
+
+    report = storage_lifecycle.post_update_maintenance(active_version="0.1.14", budget_seconds=15.0)
+
+    assert report["component_prune"]["status"] == "protected_root", report
+    assert (real / "obsolete").is_dir()
+
+
+def test_update_failures_never_classify_dns_or_local_prerequisites_as_internal():
+    import diagnostic_support
+
+    class LockTimeout(Exception):
+        pass
+
+    def categorised(exc, category):
+        exc.category = category
+        return exc
+
+    transport = [
+        categorised(RuntimeError("dns lookup failed"), "resolver"),
+        TimeoutError("dns lookup failed"),
+    ]
+    prerequisites = [
+        categorised(RuntimeError("another updater holds the lock"), "busy"),
+        categorised(RuntimeError("retry after the builder exits"), "deferred"),
+        categorised(RuntimeError("missing toolchain"), "prerequisite"),
+        LockTimeout("update lock held"),
+        PermissionError("read-only install root"),
+        OSError(errno.ENOSPC, "no space left on device"),
+    ]
+    for exc in transport:
+        category, reportable, code = diagnostic_support.classify_update_failure(exc)
+        assert (category, reportable) == ("connectivity", False), (exc, category, code)
+        assert diagnostic_support.is_internal_mcp_exception(exc) is False
+    for exc in prerequisites:
+        category, reportable, code = diagnostic_support.classify_update_failure(exc)
+        assert (category, reportable) == ("prerequisite", False), (exc, category, code)
+        assert diagnostic_support.is_internal_mcp_exception(exc) is False
+    # A genuine product fault still classifies as a reportable interior bug.
+    assert diagnostic_support.classify_update_failure(RuntimeError("broken helper")) == (
+        "internal", True, "update_internal_failure",
+    )
+
+    recorded = {}
+    import mindie_diagnostics.integration as integration
+
+    def spy(component, operation, **kwargs):
+        recorded.update(kwargs)
+        return {"recorded": True}
+
+    original = integration.record_failure
+    integration.record_failure = spy
+    try:
+        diagnostic_support.failure(
+            "component.update", "prepare", "update", exception=categorised(RuntimeError("dns"), "resolver")
+        )
+    finally:
+        integration.record_failure = original
+    assert recorded["category"] == "connectivity"
+    assert recorded["reportable"] is False
 
 
 def test_component_update_lock_contention_is_busy_not_a_fault(monkeypatch):

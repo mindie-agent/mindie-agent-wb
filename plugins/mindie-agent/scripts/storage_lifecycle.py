@@ -1,27 +1,31 @@
 """Shared-storage lifecycle helpers for the WorkBuddy adapter.
 
 [Role]
-Serializes component updates, unbinds pinned WorkBuddy cache interpreters,
-retires superseded plugin caches, and holds a resident MCP runtime lease.
+Serializes component updates, unbinds pinned cache interpreters, retires
+superseded plugin caches, and holds a resident MCP runtime lease.
 
 [Invariants]
 - `component_update_lock` is the only cross-process updater mutex; a contended
   acquisition returns `False` and never invents a failed update.
-- Cache refreshes touch only existing `plugins/cache/*/mindie-agent/<version>`
-  records and rewrite only Python launcher tokens. Account and consent state
-  are never read or written.
+- Cache refreshes rewrite only Python launcher tokens in existing
+  `plugins/cache/*/mindie-agent/<version>` records; account and consent state
+  are never touched, and a manifest reached through a symlink/junction, a Git
+  checkout, or a configured source root is reported and left untouched.
+- Cache rollback ranking reads formal versions only: `.trash-*` remnants and
+  non-semver names never consume the single rollback slot.
 - A cache generation leaves only through `retire_directory` (two-phase rename);
-  Windows never holds an entry descriptor across the NTFS rename.
-- Incomplete process inspection or a live lease keeps the generation.
-- A post-update local occupancy becomes `receipt_warning` on a successful
-  switch, never a one-way fault.
-- `hold_runtime_lease` protects the generation owning `sys.executable`; an
-  absent or moved generation simply serves without a lease.
+  Windows never holds a descriptor across the NTFS rename, and incomplete
+  process inspection or a live lease keeps the generation.
+- A borrowed generation survives a narrowed `--config`: every default sibling
+  config home is inspected and its pinned generations hold a lease across both
+  prune phases.
+- An ordinary post-update occupancy becomes `cleanup_warning`, never
+  `receipt_unconfirmed`; `hold_runtime_lease` protects the `sys.executable`
+  generation and serves unleased when it is absent or has moved.
 
 [Timeouts & Locks]
 - Updater mutex: `1.0s` non-blocking poll budget. Reclamation uses one absolute
-  deadline (`8.0s` default), checks every entry, and never waits on a lock.
-  `hold_runtime_lease` uses the shared non-blocking OS lease.
+  deadline (`8.0s` default), never waits on a lock, and leases never block.
 
 [Side-Effect Policy]
 - Writes `<data_home>/wb-component-update.lock`, atomically rewrites pinned
@@ -32,20 +36,31 @@ retires superseded plugin caches, and holds a resident MCP runtime lease.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 from pathlib import Path
 import re
 import sys
+import tempfile
 import time
 
-from paths import atomic_write_json, config_path, data_home, read_json, state_dir, workbuddy_config_dir
+from paths import config_path, data_home, read_json, state_dir, workbuddy_config_dir
 
 UPDATE_LOCK_NAME = "wb-component-update.lock"
 UPDATE_LOCK_TIMEOUT = 1.0
 DEFAULT_MAINTENANCE_BUDGET = 8.0
 CACHE_PLUGIN_NAME = "mindie-agent"
+_TRASH_PREFIX = ".trash-"
+# A rollback candidate is a formal release directory, never a `.trash-*`
+# remnant or an installer scratch name such as `latest` / `tmp-abc`.
+_CACHE_VERSION = re.compile(r"[0-9]+(?:\.[0-9]+)+")
 _CACHE_JSON_NAMES = ("hooks.json", "hooks/hooks.json", "mcp.json", ".mcp.json")
+_BORROWED_CONFIG_FILES = (
+    "codex.json", "cc.json", "kimi.json", "agy.json", "wb.json", "oc.json",
+    "dsh/config.json", "dsh/engine.json", "diagnostics.json",
+)
 _PYTHON_LAUNCHER = re.compile(r"python(?:w)?(?:\d+(?:\.\d+)*)?(?:\.exe)?")
+_MAX_STRING_DEPTH = 4
 
 
 def _version_key(name: str):
@@ -63,6 +78,113 @@ def _path_key(value) -> str:
         raise
     except (ImportError, OSError, RuntimeError):
         return os.path.normcase(os.path.abspath(os.fspath(value)))
+
+
+def _is_junction(value) -> bool:
+    """Report an NTFS junction without following it; unknown inspection refuses."""
+    try:
+        from mindie_knowledge.filesystem import is_junction
+    except ImportError:
+        is_junction = None
+    if is_junction is not None:
+        try:
+            return bool(is_junction(value))
+        except TimeoutError:
+            raise
+        except (OSError, ValueError):
+            return True
+    try:
+        return bool(getattr(os.lstat(os.fspath(value)), "st_reparse_tag", 0))
+    except TimeoutError:
+        raise
+    except (OSError, ValueError):
+        return False
+
+
+def _linked_segment(anchor: Path, target: Path) -> Path | None:
+    """First symlink/junction between `anchor` and `target` (inclusive), if any."""
+    anchor, target = Path(anchor), Path(target)
+    try:
+        parts = target.relative_to(anchor).parts
+    except ValueError:
+        parts = ()
+    probe = anchor
+    for part in parts:
+        probe = probe / part
+        if probe.is_symlink() or _is_junction(probe):
+            return probe
+    return target if (not parts and (target.is_symlink() or _is_junction(target))) else None
+
+
+def _iter_strings(value, depth: int = 0):
+    """Bounded walk over a parsed profile's string leaves."""
+    if isinstance(value, str):
+        yield value
+    elif depth < _MAX_STRING_DEPTH and isinstance(value, (dict, list)):
+        items = value.values() if isinstance(value, dict) else value
+        for item in items:
+            yield from _iter_strings(item, depth + 1)
+
+
+def _default_config_homes() -> list[Path]:
+    """Default sibling config homes (`MINDIE_CONFIG_HOME`, XDG, Windows roaming)."""
+    try:
+        from mindie_knowledge.storage.legacy_roots import _config_homes
+        return list(_config_homes(None))
+    except (ImportError, AttributeError, TypeError):
+        pass
+    homes = [Path.home() / ".config" / "mindie-agent"]
+    override = os.environ.get("MINDIE_CONFIG_HOME")
+    if override and os.path.isabs(override):
+        homes.insert(0, Path(override))
+    if os.name == "nt":
+        homes.extend(Path(os.environ[key]) / "mindie-agent"
+                     for key in ("APPDATA", "LOCALAPPDATA") if os.environ.get(key))
+    return homes
+
+
+def _config_homes_for_sweep(config: str | Path | None) -> list[Path]:
+    """Every config home whose borrowed runtimes must survive a legacy sweep.
+
+    Passing one narrowed directory would hide a sibling profile such as
+    `codex.json` that still borrows a generation inside this data home.
+    """
+    homes: list[Path] = []
+    seen: set[str] = set()
+    for home in (config_path(config).parent, *_default_config_homes()):
+        key = os.path.normcase(os.path.abspath(os.fspath(home)))
+        if key not in seen:
+            seen.add(key)
+            homes.append(Path(home))
+    return homes
+
+
+def _borrowed_runtime_owners(config_homes) -> list[Path]:
+    """Runtime generations pinned as an interpreter by any sibling profile."""
+    try:
+        from mindie_knowledge.storage import owning_dir
+    except ImportError:
+        return []
+    owners: list[Path] = []
+    seen: set[str] = set()
+    for home in config_homes:
+        for name in _BORROWED_CONFIG_FILES:
+            document = Path(home) / name
+            try:
+                payload = read_json(document) if document.is_file() and not document.is_symlink() else None
+            except TimeoutError:
+                raise
+            except (OSError, ValueError):
+                payload = None
+            for text in _iter_strings(payload) if payload else ():
+                token = text.strip().strip('"').strip("'")
+                launcher = re.split(r"[\\/]", token)[-1].casefold() if os.path.isabs(token) else ""
+                owner = owning_dir(token) if _PYTHON_LAUNCHER.fullmatch(launcher) else None
+                key = os.path.normcase(os.path.abspath(os.fspath(owner))) if owner is not None else ""
+                if key and key not in seen:
+                    seen.add(key)
+                    owners.append(owner)
+    return owners
 
 
 @contextlib.contextmanager
@@ -125,9 +247,7 @@ def _split_launcher(command: str) -> tuple[str, str]:
         return "", ""
     if text[0] in "\"'":
         close = text.find(text[0], 1)
-        if close < 0:
-            return text, ""
-        return text[1:close], text[close + 1:]
+        return (text, "") if close < 0 else (text[1:close], text[close + 1:])
     head, _, rest = text.partition(" ")
     return head, ((" " + rest) if rest else "")
 
@@ -171,7 +291,7 @@ def _cache_plugin_dirs(wb_root: Path):
         except OSError:
             continue
         for version_dir in versions:
-            if not version_dir.name.startswith(".trash-"):
+            if not version_dir.name.startswith(_TRASH_PREFIX):
                 yield version_dir
 
 
@@ -210,6 +330,66 @@ def _refresh_mcp(payload: dict, new_python: str) -> bool:
     return changed
 
 
+def _cache_manifest_blocker(cache_root: Path, target: Path) -> str | None:
+    """Why `target` must not be read or rewritten, or `None` when it is safe.
+
+    Every segment below the managed cache root must be a real entry: a `hooks/`
+    symlink or junction can point at an external Git checkout.
+    """
+    root, path = Path(cache_root), Path(target)
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return "outside cache root"
+    if _linked_segment(root, path):
+        return "linked path"
+    try:
+        resolved_root, resolved = root.resolve(), path.resolve()
+        resolved.relative_to(resolved_root)
+    except TimeoutError:
+        raise
+    except ValueError:
+        return "outside cache root"
+    except (OSError, RuntimeError):
+        return "unresolvable"
+    if resolved == resolved_root:
+        return "outside cache root"
+    try:
+        from mindie_knowledge.storage.legacy_roots import protected_source_roots
+        from mindie_knowledge.storage.lifecycle import has_git_ancestor, is_within_roots
+        if has_git_ancestor(resolved):
+            return "Git checkout"
+        if is_within_roots(resolved, protected_source_roots()):
+            return "protected source root"
+    except TimeoutError:
+        raise
+    except ImportError:
+        return None
+    except (AttributeError, OSError):
+        return "unverifiable"
+    return None
+
+
+def _write_json_no_follow(target: Path, payload: dict) -> None:
+    """Atomically replace `target` in its own directory without resolving links."""
+    serialized = (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    descriptor, name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(serialized)
+            stream.flush()
+        os.replace(temporary, target)
+    except BaseException:
+        try:
+            temporary.unlink(missing_ok=True)
+        except TimeoutError:
+            raise
+        except OSError:
+            pass
+        raise
+
+
 def refresh_workbuddy_cache_python(
     new_python: str | Path | None,
     *,
@@ -225,7 +405,11 @@ def refresh_workbuddy_cache_python(
     for version_dir in _cache_plugin_dirs(root):
         for relative in _CACHE_JSON_NAMES:
             target = version_dir / relative
-            if target.is_symlink() or not target.is_file():
+            if not target.is_file():
+                continue
+            blocker = _cache_manifest_blocker(root, target)
+            if blocker is not None:
+                report["warnings"].append(f"{target.name}: skipped ({blocker})")
                 continue
             try:
                 payload = read_json(target)
@@ -239,8 +423,14 @@ def refresh_workbuddy_cache_python(
                 changed = _refresh_mcp(payload, python_text) or changed
             if not changed:
                 continue
+            # Re-verify immediately before the rename: a link swapped in after
+            # the read must not redirect the atomic replace.
+            recheck = _cache_manifest_blocker(root, target)
+            if recheck is not None:
+                report["warnings"].append(f"{target.name}: skipped ({recheck})")
+                continue
             try:
-                atomic_write_json(target, payload)
+                _write_json_no_follow(target, payload)
             except TimeoutError:
                 raise
             except OSError as exc:
@@ -289,22 +479,14 @@ def prune_workbuddy_plugin_caches(
     budget_seconds: float = 5.0,
 ) -> dict:
     """Retire superseded MindIE plugin caches, keeping active plus one rollback."""
-    report: dict = {
-        "schema": "mindie-wb-cache-prune/1",
-        "status": "completed",
-        "reclaimed": [],
-        "kept": [],
-        "warnings": [],
-        "partial": False,
-    }
+    report: dict = {"schema": "mindie-wb-cache-prune/1", "status": "completed",
+                    "reclaimed": [], "kept": [], "warnings": [], "partial": False,
+                    "reclaimed_trash": 0}
     root = Path(wb_dir).expanduser().resolve() if wb_dir is not None else workbuddy_config_dir(config)
     try:
         from mindie_knowledge.storage import (
-            is_lease_held,
-            is_path_used_by_live_process,
-            live_process_prefixes,
-            retire_directory,
-        )
+            is_lease_held, is_path_used_by_live_process, live_process_prefixes,
+            retire_directory, sweep_trash)
     except ImportError:
         report["status"] = "unavailable"
         return report
@@ -318,16 +500,29 @@ def prune_workbuddy_plugin_caches(
         return report
     plugin_dirs = sorted({version_dir.parent for version_dir in _cache_plugin_dirs(root)})
     for plugin_dir in plugin_dirs:
+        # Leftover `.trash-*` remnants are half-retired generations, not
+        # releases: finish deleting them first so they can never be ranked.
+        try:
+            trash = sweep_trash(plugin_dir, deadline=deadline)
+        except TimeoutError:
+            raise
+        except OSError as exc:
+            report["warnings"].append(f"trash {plugin_dir.name}: {type(exc).__name__}")
+            trash = {}
+        report["reclaimed_trash"] += int(trash.get("removed") or 0)
+        report["warnings"].extend(f"trash: {w}" for w in list(trash.get("warnings") or ())[:2])
+        if trash.get("partial"):
+            report["status"] = "partial"
+            report["partial"] = True
         try:
             versions = sorted(
                 [entry for entry in plugin_dir.iterdir()
-                 if entry.is_dir() and not entry.is_symlink()],
+                 if entry.is_dir() and not entry.is_symlink()
+                 and _CACHE_VERSION.match(entry.name)],
                 # Rank by formal version, not directory mtime: refreshing a
-                # pinned launcher rewrites files and must not promote an older
-                # generation into the rollback slot.
+                # pinned launcher must not promote an older generation.
                 key=lambda entry: (_version_key(entry.name), entry.stat().st_mtime),
-                reverse=True,
-            )
+                reverse=True)
         except TimeoutError:
             raise
         except OSError as exc:
@@ -335,18 +530,26 @@ def prune_workbuddy_plugin_caches(
             continue
         pinned = _pinned_cache_versions(root, plugin_dir)
         retained = set(pinned)
-        if active_version and (plugin_dir / active_version).is_dir():
+        active_key = (_version_key(active_version)
+                      if isinstance(active_version, str)
+                      and _CACHE_VERSION.match(active_version) else None)
+        active = plugin_dir / active_version if active_key is not None else None
+        if active is not None and active.is_dir() and not active.is_symlink():
             retained.add(active_version)
-        if not retained and versions:
-            retained.add(versions[0].name)
-        rollback_slots = max(0, int(keep_previous))
-        for entry in versions:
-            if rollback_slots <= 0:
-                break
-            if entry.name in retained:
-                continue
+        if active_key is None:
+            if not retained and versions:
+                retained.add(versions[0].name)
+            older = [entry for entry in versions if entry.name not in retained]
+        else:
+            # Keep the active release, everything newer (a newer installed
+            # release is not this sweep's rollback candidate), and the single
+            # immediately previous formal release as the rollback slot.
+            retained.update(entry.name for entry in versions
+                            if _version_key(entry.name) > active_key)
+            older = [entry for entry in versions
+                     if _version_key(entry.name) < active_key]
+        for entry in older[:max(0, int(keep_previous))]:
             retained.add(entry.name)
-            rollback_slots -= 1
         for entry in versions:
             if entry.name in retained:
                 report["kept"].append(str(entry))
@@ -389,6 +592,41 @@ def _warnings_for(report: dict) -> list[str]:
     return []
 
 
+def _caller_config_pins(config: str | Path | None) -> list[str]:
+    """Absolute source/state pins of the caller's own profile document."""
+    document = config_path(config)
+    try:
+        payload = read_json(document) if document.is_file() else {}
+    except TimeoutError:
+        raise
+    except (OSError, ValueError):
+        payload = {}
+    return [value for key in ("state_dir", "root", "venv_dir", "package_dir", "source_root")
+            if isinstance(value := payload.get(key), str) and os.path.isabs(value)]
+
+
+def _runtime_root_blocker(runtimes: Path, config: str | Path | None) -> str | None:
+    """Why the component-runtimes root must not be pruned, or `None` when safe."""
+    linked = _linked_segment(data_home(), runtimes)
+    if linked is not None:
+        return f"linked path: {linked.name[:32]}"
+    try:
+        from mindie_knowledge.storage.legacy_roots import protected_source_roots
+        from mindie_knowledge.storage.lifecycle import has_git_ancestor, is_within_roots
+        if has_git_ancestor(runtimes):
+            return "Git checkout ancestor"
+        roots = protected_source_roots(config_home=_config_homes_for_sweep(config))
+        if is_within_roots(runtimes, roots):
+            return "protected source root"
+    except TimeoutError:
+        raise
+    except ImportError:
+        return None
+    except (AttributeError, OSError):
+        return "unverifiable"
+    return None
+
+
 def post_update_maintenance(
     config: str | Path | None = None,
     new_python: str | Path | None = None,
@@ -398,15 +636,9 @@ def post_update_maintenance(
     budget_seconds: float = DEFAULT_MAINTENANCE_BUDGET,
 ) -> dict:
     """Refresh external cache pins, retire old caches, and reclaim storage in one budget."""
-    report: dict = {
-        "schema": "mindie-wb-storage-maintenance/1",
-        "status": "completed",
-        "warnings": [],
-        "cache_refresh": None,
-        "cache_cleanup": None,
-        "component_prune": None,
-        "legacy_sweep": None,
-    }
+    report: dict = {"schema": "mindie-wb-storage-maintenance/1", "status": "completed",
+                    "warnings": [], "cache_refresh": None, "cache_cleanup": None,
+                    "component_prune": None, "legacy_sweep": None}
     deadline = time.monotonic() + max(0.1, float(budget_seconds))
 
     def remaining(limit: float) -> float:
@@ -433,8 +665,14 @@ def post_update_maintenance(
             report["warnings"].append(f"cache cleanup: {type(exc).__name__}: {exc}")
 
     runtimes = state_dir(config) / "component-runtimes"
-    if runtimes.is_dir():
-        keep_paths: list[str] = []
+    blocker = _runtime_root_blocker(runtimes, config) if runtimes.is_dir() else None
+    if blocker is not None:
+        # A runtimes root reached through a link, a Git checkout, or a user
+        # source pin is foreign storage: refuse the whole first phase.
+        report["warnings"].append(f"component prune: skipped ({blocker})")
+        report["component_prune"] = {"status": "protected_root", "warnings": [blocker]}
+    if runtimes.is_dir() and blocker is None:
+        keep_paths: list[str] = _caller_config_pins(config)
         try:
             from mindie_knowledge.storage import owning_dir
         except ImportError:
@@ -444,10 +682,9 @@ def post_update_maintenance(
                 continue
             path = str(Path(interpreter).expanduser())
             keep_paths.append(path)
-            if owning_dir is not None:
-                owner = owning_dir(path)
-                if owner is not None:
-                    keep_paths.append(str(owner))
+            owner = owning_dir(path) if owning_dir is not None else None
+            if owner is not None:
+                keep_paths.append(str(owner))
         try:
             from mindie_knowledge.storage import prune_component_runtimes
 
@@ -469,15 +706,19 @@ def post_update_maintenance(
     try:
         from mindie_knowledge.storage import sweep_legacy_installations
 
-        # The active generation and its rollback must survive this second
-        # sweep even when the profile's source_root/package_dir pins have not
-        # been re-read yet; temporary shared leases are the liveness authority.
+        # The active generation, its rollback, and every generation borrowed by
+        # a sibling harness profile must survive this second sweep even when the
+        # caller narrowed `--config` or its pins were not re-read yet; temporary
+        # shared leases are the liveness authority.
+        config_homes = _config_homes_for_sweep(config)
         with contextlib.ExitStack() as leases:
             leases.enter_context(hold_runtime_lease(new_python))
             if previous_python:
                 leases.enter_context(hold_runtime_lease(previous_python))
+            for owner in _borrowed_runtime_owners(config_homes):
+                leases.enter_context(_hold_owner_lease(owner))
             report["legacy_sweep"] = sweep_legacy_installations(
-                config_home=config_path(config).parent,
+                config_home=config_homes,
                 data_home=data_home(),
                 budget_seconds=remaining(5.0),
                 deadline=deadline,
@@ -496,28 +737,34 @@ def post_update_maintenance(
 
 
 @contextlib.contextmanager
-def hold_runtime_lease(executable: str | Path | None = None):
-    """Hold a shared lease for the generation owning `executable` while serving."""
-    try:
-        from mindie_knowledge.storage import acquire_runtime_lease, owning_dir
-    except ImportError:
-        yield None
-        return
-    owner = owning_dir(str(executable or sys.executable))
-    if owner is None:
-        yield None
-        return
-    try:
-        lease = acquire_runtime_lease(owner)
-    except TimeoutError:
-        raise
-    except (OSError, RuntimeError):
-        yield None
-        return
+def _hold_owner_lease(owner: Path | None):
+    """Hold one generation's shared lease; an absent/moved owner serves unleased."""
+    lease = None
+    if owner is not None:
+        try:
+            from mindie_knowledge.storage import acquire_runtime_lease
+            lease = acquire_runtime_lease(owner)
+        except TimeoutError:
+            raise
+        except (ImportError, OSError, RuntimeError):
+            lease = None
     try:
         yield lease
     finally:
-        lease.release()
+        if lease is not None:
+            lease.release()
+
+
+@contextlib.contextmanager
+def hold_runtime_lease(executable: str | Path | None = None):
+    """Hold a shared lease for the generation owning `executable` while serving."""
+    try:
+        from mindie_knowledge.storage import owning_dir
+    except ImportError:
+        yield None
+        return
+    with _hold_owner_lease(owning_dir(str(executable or sys.executable))) as lease:
+        yield lease
 
 
 def configure_uv_cache(target_dir: str | Path, env: dict[str, str]) -> dict[str, str]:

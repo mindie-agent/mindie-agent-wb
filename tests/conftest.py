@@ -94,11 +94,18 @@ def isolated_mindie_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     appdata = base_dir / "appdata" / "Roaming"
     localappdata = base_dir / "appdata" / "Local"
     wb_home = base_dir / "workbuddy"
+    wb_user_home = base_dir / "workbuddy-home"
     cb_home = base_dir / "codebuddy"
+    codex_home = base_dir / "codex"
+    claude_home = base_dir / "claude"
+    kimi_home = base_dir / "kimi"
+    dsh_home = base_dir / "dsh"
+    oc_home = base_dir / "opencode"
     tmp_dir = base_dir / "tmp"
     uv_cache = cache_home / "uv"
     for folder in (home_dir, cfg_home, data_home, state_home, cache_home, appdata,
-                   localappdata, wb_home, cb_home, tmp_dir, uv_cache):
+                   localappdata, wb_home, wb_user_home, cb_home, codex_home,
+                   claude_home, kimi_home, dsh_home, oc_home, tmp_dir, uv_cache):
         folder.mkdir(parents=True, exist_ok=True)
 
     gitleaks_dir = home_dir / ".cache" / "mindie-agent" / "gitleaks"
@@ -133,7 +140,16 @@ def isolated_mindie_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MINDIE_DIAGNOSTICS_CONFIG", str(cfg_home / "diagnostics.json"))
     monkeypatch.setenv("MINDIE_DIAGNOSTICS_ROOT", str(data_home / "diagnostics"))
     monkeypatch.setenv("WORKBUDDY_CONFIG_DIR", str(wb_home))
+    monkeypatch.setenv("WORKBUDDY_HOME", str(wb_user_home))
     monkeypatch.setenv("CODEBUDDY_CONFIG_DIR", str(cb_home))
+    # Sibling harness profiles are read by the cross-plugin legacy sweep and by
+    # `protected_source_roots`; isolate each one so no test ever inspects the
+    # real user's `~/.codex`, `~/.claude`, `~/.kimi`, or `~/.dsh`.
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home))
+    monkeypatch.setenv("KIMI_SHARE_DIR", str(kimi_home))
+    monkeypatch.setenv("DSH_HOME", str(dsh_home))
+    monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(oc_home))
     monkeypatch.setenv("TMPDIR", str(tmp_dir))
     monkeypatch.setenv("TEMP", str(tmp_dir))
     monkeypatch.setenv("TMP", str(tmp_dir))
