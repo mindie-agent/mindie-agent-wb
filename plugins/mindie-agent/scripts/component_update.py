@@ -63,6 +63,7 @@ from paths import (
     repo_root,
     state_dir,
 )
+from storage_lifecycle import component_update_lock, post_update_maintenance
 
 UPDATE_CHECK_INTERVAL = 300.0
 UPDATE_FAILURE_BACKOFF = 60.0
@@ -439,6 +440,29 @@ def check(
     sync_feeds: bool = False,
     timeout: float = 540.0,
 ) -> dict:
+    """Serialize one component update across processes, then run it once."""
+    with component_update_lock(data_home()) as acquired:
+        if not acquired:
+            return dict(
+                schema="mindie-component-update/1",
+                harness="workbuddy",
+                status="busy",
+                busy=True,
+                python=_norm_python_path(sys.executable),
+                message="another MindIE component update is in progress",
+            )
+        return _check_locked(config=config, source=source, force=force,
+                             sync_feeds=sync_feeds, timeout=timeout)
+
+
+def _check_locked(
+    *,
+    config: str | Path | None = None,
+    source: str | Path | None = None,
+    force: bool = False,
+    sync_feeds: bool = False,
+    timeout: float = 540.0,
+) -> dict:
     """Check for newer formal component releases, switch profile interpreter, and optionally sync feeds."""
     apply_enterprise_transport_env()
     from mindie_knowledge.component_bindings import rebind_commands
@@ -486,6 +510,8 @@ def check(
         raise
 
     post_promote_warn = None
+    maintenance_report = None
+    maintenance_warnings: list[str] = []
     if artifact is not None:
         new_python = _norm_python_path(artifact["python"])
         installed = artifact["installed"]
@@ -508,6 +534,24 @@ def check(
                 atomic_write_json(eng_file, eng_payload)
         except (TimeoutError, OSError, ValueError, TypeError) as exc:
             post_promote_warn = f"{type(exc).__name__}: {exc}"
+        try:
+            active_version = read_json(HERE.parent / "plugin.json").get("version")
+        except TimeoutError:
+            raise
+        except (OSError, ValueError):
+            active_version = None
+        try:
+            maintenance_report = post_update_maintenance(
+                cfg_file,
+                new_python,
+                previous_python=_norm_python_path(current_python),
+                active_version=active_version if isinstance(active_version, str) else None,
+            )
+            maintenance_warnings.extend(maintenance_report.get("warnings", []))
+        except TimeoutError as exc:
+            maintenance_warnings.append(f"{type(exc).__name__}: {exc}")
+        except Exception as exc:
+            maintenance_warnings.append(f"{type(exc).__name__}: {exc}")
     else:
         status = "up_to_date"
         active_python = _norm_python_path(current_python)
@@ -560,8 +604,16 @@ def check(
         python=active_python,
         installed=installed,
     )
+    if maintenance_report is not None:
+        result["storage_maintenance"] = maintenance_report
     if post_promote_warn is not None:
         result["receipt_warning"] = post_promote_warn
+        result["receipt_unconfirmed"] = True
+    if maintenance_warnings:
+        warning = "; ".join(maintenance_warnings)
+        result["receipt_warning"] = (
+            f"{result['receipt_warning']}; {warning}" if result.get("receipt_warning") else warning
+        )
         result["receipt_unconfirmed"] = True
     if sync_feeds:
         try:

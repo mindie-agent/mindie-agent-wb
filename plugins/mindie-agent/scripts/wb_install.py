@@ -32,6 +32,7 @@ import shutil
 import tempfile
 
 from paths import atomic_write_json, config_path, data_home, plugin_root, read_json, workbuddy_config_dir
+from storage_lifecycle import prune_workbuddy_plugin_caches, refresh_workbuddy_cache_python
 
 _TEXT_SUFFIXES = {".py", ".json", ".md", ".toml", ".svg", ".txt", ".yml", ".yaml"}
 
@@ -298,6 +299,18 @@ def install_workbuddy_plugin(
             atomic_write_json(acct_file, {"version": 1, "identityKey": f"{uid}|{ent_id}", "plugins": acct_plugins})
             activated_accounts.append(uid)
 
+    cache_maintenance: dict = {}
+    try:
+        if verified_py:
+            cache_maintenance["refresh"] = refresh_workbuddy_cache_python(verified_py, wb_dir=wb_root)
+        cache_maintenance["cleanup"] = prune_workbuddy_plugin_caches(
+            wb_dir=wb_root, active_version=version,
+        )
+    except TimeoutError as exc:
+        cache_maintenance["warning"] = f"{type(exc).__name__}: {exc}"
+    except Exception as exc:
+        cache_maintenance["warning"] = f"{type(exc).__name__}: {exc}"
+
     return {
         "status": "installed",
         "plugin_id": plugin_id,
@@ -310,4 +323,5 @@ def install_workbuddy_plugin(
         "installed_plugins": str(installed_file),
         "settings_file": str(settings_file),
         "activated_accounts": activated_accounts,
+        "cache_maintenance": cache_maintenance,
     }

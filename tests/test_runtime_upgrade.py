@@ -10,7 +10,6 @@ import stat
 import subprocess
 import sys
 import tarfile
-import tempfile
 import time
 
 import anyio
@@ -40,7 +39,10 @@ OLD_TARGETS = {
 def test_old_runtime_pair_survives_prepare_failure_and_upgrades(tmp_path, monkeypatch, request):
     budget_seconds = 240.0 if os.name == "nt" else 120.0
     deadline = time.monotonic() + budget_seconds
-    tmp_path = Path(tempfile.mkdtemp(prefix="mindie-upgrade-", dir=ROOT.parent))
+    # Use the pytest-owned tmp_path: a failed acceptance run must never leave
+    # multi-hundred-MiB component generations beside the Git checkout.
+    tmp_path = Path(tmp_path)
+    assert ROOT.resolve() not in tmp_path.resolve().parents
 
     def _force_writable(func, target_path, _exc):
         try:
@@ -53,11 +55,15 @@ def test_old_runtime_pair_survives_prepare_failure_and_upgrades(tmp_path, monkey
 
     def clean_native_directory():
         resolved = tmp_path.resolve()
-        assert resolved.parent == ROOT.parent.resolve() and resolved.name.startswith("mindie-upgrade-")
+        if not resolved.exists():
+            return
         # Component generations contain long third-party package paths and read-only git packfiles on Windows.
         raw = str(resolved)
         rm_target = (raw if raw.startswith("\\\\?\\") else f"\\\\?\\{raw}") if os.name == "nt" else resolved
-        shutil.rmtree(rm_target, onexc=_force_writable)
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(rm_target, onexc=_force_writable, ignore_errors=True)
+        else:
+            shutil.rmtree(rm_target, onerror=_force_writable, ignore_errors=True)
 
     request.addfinalizer(clean_native_directory)
     home, config_home, data_home = (tmp_path / name for name in ("home", "config", "data"))

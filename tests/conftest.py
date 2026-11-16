@@ -8,6 +8,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import time
 import pytest
 
 REAL_HOME = Path.home()
@@ -59,6 +60,28 @@ def _force_writable(func, target_path, _exc):
         pass
 
 
+def _rmtree_exact(path: Path) -> None:
+    """Remove one test-owned tree, retrying Windows read-only/locked leftovers."""
+    raw = str(path.resolve())
+    target = raw if raw.startswith("\\\\?\\") else f"\\\\?\\{raw}"
+    for attempt in range(5):
+        try:
+            if sys.version_info >= (3, 12):
+                shutil.rmtree(target, onexc=_force_writable)
+            else:
+                shutil.rmtree(target, onerror=_force_writable)
+            return
+        except FileNotFoundError:
+            return
+        except TimeoutError:
+            raise
+        except OSError:
+            if attempt == 4:
+                shutil.rmtree(target, ignore_errors=True)
+            else:
+                time.sleep(0.05 * (attempt + 1))
+
+
 @pytest.fixture(autouse=True)
 def isolated_mindie_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Strictly isolate HOME, AppData, XDG, and all MindIE and WorkBuddy/CodeBuddy paths per test."""
@@ -72,7 +95,10 @@ def isolated_mindie_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     localappdata = base_dir / "appdata" / "Local"
     wb_home = base_dir / "workbuddy"
     cb_home = base_dir / "codebuddy"
-    for folder in (home_dir, cfg_home, data_home, state_home, cache_home, appdata, localappdata, wb_home, cb_home):
+    tmp_dir = base_dir / "tmp"
+    uv_cache = cache_home / "uv"
+    for folder in (home_dir, cfg_home, data_home, state_home, cache_home, appdata,
+                   localappdata, wb_home, cb_home, tmp_dir, uv_cache):
         folder.mkdir(parents=True, exist_ok=True)
 
     gitleaks_dir = home_dir / ".cache" / "mindie-agent" / "gitleaks"
@@ -108,6 +134,10 @@ def isolated_mindie_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MINDIE_DIAGNOSTICS_ROOT", str(data_home / "diagnostics"))
     monkeypatch.setenv("WORKBUDDY_CONFIG_DIR", str(wb_home))
     monkeypatch.setenv("CODEBUDDY_CONFIG_DIR", str(cb_home))
+    monkeypatch.setenv("TMPDIR", str(tmp_dir))
+    monkeypatch.setenv("TEMP", str(tmp_dir))
+    monkeypatch.setenv("TMP", str(tmp_dir))
+    monkeypatch.setenv("UV_CACHE_DIR", str(uv_cache))
     monkeypatch.setenv("_MINDIE_WB_REEXEC", "1")
     monkeypatch.delenv("WB_CONVERSATION_ID", raising=False)
     monkeypatch.delenv("CODEBUDDY_SESSION_ID", raising=False)
@@ -122,9 +152,4 @@ def isolated_mindie_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         )
     finally:
         if os.name == "nt" and base_dir != tmp_path:
-            raw = str(base_dir.resolve())
-            rm_target = raw if raw.startswith("\\\\?\\") else f"\\\\?\\{raw}"
-            if sys.version_info >= (3, 12):
-                shutil.rmtree(rm_target, onexc=_force_writable)
-            else:
-                shutil.rmtree(rm_target, onerror=_force_writable)
+            _rmtree_exact(base_dir)
