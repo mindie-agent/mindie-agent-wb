@@ -159,32 +159,40 @@ def _config_homes_for_sweep(config: str | Path | None) -> list[Path]:
     return homes
 
 
-def _borrowed_runtime_owners(config_homes) -> list[Path]:
-    """Runtime generations pinned as an interpreter by any sibling profile."""
+def _strip_win_prefix(text: str) -> str:
+    if text[:8].upper() == "\\\\?\\UNC\\":
+        return "\\\\" + text[8:]
+    return text[4:] if text.startswith(("\\\\?\\", "//?/")) else text
+
+
+def _borrowed_runtime_owners(config_homes) -> tuple[list[Path], bool]:
+    """Runtime generations pinned by sibling profiles; bool flags scan completeness."""
     try:
         from mindie_knowledge.storage import owning_dir
     except ImportError:
-        return []
-    owners: list[Path] = []
-    seen: set[str] = set()
+        return [], True
+    owners, seen, complete = [], set(), True
     for home in config_homes:
         for name in _BORROWED_CONFIG_FILES:
             document = Path(home) / name
             try:
-                payload = read_json(document) if document.is_file() and not document.is_symlink() else None
+                if not (document.exists() or document.is_symlink()):
+                    continue
+                payload = read_json(document)
             except TimeoutError:
                 raise
             except (OSError, ValueError):
-                payload = None
+                complete, payload = False, None
             for text in _iter_strings(payload) if payload else ():
-                token = text.strip().strip('"').strip("'")
+                token = _strip_win_prefix(text.strip().strip('"').strip("'"))
                 launcher = re.split(r"[\\/]", token)[-1].casefold() if os.path.isabs(token) else ""
                 owner = owning_dir(token) if _PYTHON_LAUNCHER.fullmatch(launcher) else None
-                key = os.path.normcase(os.path.abspath(os.fspath(owner))) if owner is not None else ""
+                clean = Path(_strip_win_prefix(os.fspath(owner))) if owner is not None else None
+                key = os.path.normcase(os.path.abspath(os.fspath(clean))) if clean is not None else ""
                 if key and key not in seen:
                     seen.add(key)
-                    owners.append(owner)
-    return owners
+                    owners.append(clean)
+    return owners, complete
 
 
 @contextlib.contextmanager
@@ -704,28 +712,39 @@ def post_update_maintenance(
             report["warnings"].append(f"component prune: {type(exc).__name__}: {exc}")
 
     try:
-        from mindie_knowledge.storage import sweep_legacy_installations
+        from mindie_knowledge.storage import acquire_runtime_lease, owning_dir, sweep_legacy_installations
 
-        # The active generation, its rollback, and every generation borrowed by
-        # a sibling harness profile must survive this second sweep even when the
-        # caller narrowed `--config` or its pins were not re-read yet; temporary
-        # shared leases are the liveness authority.
         config_homes = _config_homes_for_sweep(config)
+        borrowed_owners, complete = _borrowed_runtime_owners(config_homes)
+        for interpreter in (new_python, previous_python):
+            if interpreter:
+                owner = owning_dir(_strip_win_prefix(os.fspath(Path(interpreter).expanduser())))
+                if owner is not None:
+                    borrowed_owners.append(Path(_strip_win_prefix(os.fspath(owner))))
         with contextlib.ExitStack() as leases:
-            leases.enter_context(hold_runtime_lease(new_python))
-            if previous_python:
-                leases.enter_context(hold_runtime_lease(previous_python))
-            for owner in _borrowed_runtime_owners(config_homes):
-                leases.enter_context(_hold_owner_lease(owner))
-            report["legacy_sweep"] = sweep_legacy_installations(
-                config_home=config_homes,
-                data_home=data_home(),
-                budget_seconds=remaining(5.0),
-                deadline=deadline,
-            )
-        report["warnings"].extend(_warnings_for(report["legacy_sweep"]))
-        if report["legacy_sweep"].get("deferred_dirs"):
-            report["warnings"].append("legacy storage deferred in use")
+            leased = complete
+            if not complete:
+                report["warnings"].append("legacy sweep: skipped (incomplete config scan)")
+            seen_owners: set[str] = set()
+            for owner in borrowed_owners:
+                key = os.path.normcase(os.path.abspath(os.fspath(owner)))
+                if key in seen_owners or not owner.is_dir():
+                    continue
+                seen_owners.add(key)
+                try:
+                    leases.enter_context(acquire_runtime_lease(owner))
+                except TimeoutError:
+                    raise
+                except (OSError, RuntimeError) as exc:
+                    leased = False
+                    report["warnings"].append(f"legacy sweep: lease {type(exc).__name__}")
+            if leased:
+                report["legacy_sweep"] = sweep_legacy_installations(
+                    config_home=config_homes, data_home=data_home(),
+                    budget_seconds=remaining(5.0), deadline=deadline)
+                report["warnings"].extend(_warnings_for(report["legacy_sweep"]))
+                if report["legacy_sweep"].get("deferred_dirs"):
+                    report["warnings"].append("legacy storage deferred in use")
     except TimeoutError as exc:
         report["warnings"].append(f"legacy sweep: {type(exc).__name__}: {exc}")
     except Exception as exc:
@@ -744,52 +763,35 @@ def _hold_owner_lease(owner: Path | None):
         try:
             from mindie_knowledge.storage import acquire_runtime_lease
             lease = acquire_runtime_lease(owner)
-        except TimeoutError:
-            raise
-        except (ImportError, OSError, RuntimeError):
-            lease = None
-    try:
-        yield lease
+        except TimeoutError: raise
+        except (ImportError, OSError, RuntimeError): lease = None
+    try: yield lease
     finally:
-        if lease is not None:
-            lease.release()
+        if lease is not None: lease.release()
 
 
 @contextlib.contextmanager
 def hold_runtime_lease(executable: str | Path | None = None):
     """Hold a shared lease for the generation owning `executable` while serving."""
-    try:
-        from mindie_knowledge.storage import owning_dir
+    try: from mindie_knowledge.storage import owning_dir
     except ImportError:
         yield None
         return
-    with _hold_owner_lease(owning_dir(str(executable or sys.executable))) as lease:
+    raw = _strip_win_prefix(str(executable or sys.executable))
+    owner = owning_dir(raw)
+    with _hold_owner_lease(Path(_strip_win_prefix(os.fspath(owner))) if owner is not None else None) as lease:
         yield lease
 
 
 def configure_uv_cache(target_dir: str | Path, env: dict[str, str]) -> dict[str, str]:
     """Pin uv's cache to the target volume unless the caller set `UV_CACHE_DIR`."""
-    if not isinstance(env, dict):
-        return env
-    try:
-        from mindie_knowledge.storage import configure_same_volume_uv_cache
-    except ImportError:
-        return env
-    try:
-        return configure_same_volume_uv_cache(Path(target_dir), env)
-    except TimeoutError:
-        raise
-    except OSError:
-        return env
+    if not isinstance(env, dict): return env
+    try: from mindie_knowledge.storage import configure_same_volume_uv_cache
+    except ImportError: return env
+    try: return configure_same_volume_uv_cache(Path(target_dir), env)
+    except TimeoutError: raise
+    except OSError: return env
 
 
-__all__ = [
-    "DEFAULT_MAINTENANCE_BUDGET",
-    "UPDATE_LOCK_NAME",
-    "component_update_lock",
-    "configure_uv_cache",
-    "hold_runtime_lease",
-    "post_update_maintenance",
-    "prune_workbuddy_plugin_caches",
-    "refresh_workbuddy_cache_python",
-]
+__all__ = ["DEFAULT_MAINTENANCE_BUDGET", "UPDATE_LOCK_NAME", "component_update_lock", "configure_uv_cache",
+           "hold_runtime_lease", "post_update_maintenance", "prune_workbuddy_plugin_caches", "refresh_workbuddy_cache_python"]
