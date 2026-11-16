@@ -14,9 +14,9 @@
 | :--- | :--- | :--- |
 | `mindie-knowledge` | `0.13.22` | `c991b64a1ead277b5ce91b7835337b01aed03998` |
 | `remote-dev` | `0.11.12` | `c4d38f99c1ef5aace1c088af07647941adc2d394` |
-| `mindie-diagnostics` | `0.5.14` | `cd16baa406070bcd41bbe39a9e488cc8753c60c5` |
+| `mindie-diagnostics` | `0.5.15` | `96c40049e2fc8e53676f557cb8144421efcfe8ed` |
 | `mindie-coordinator` | `0.7.11` | `33e2c6966d21d62969a2148145e74885dc826e3c` |
-| `mindie-profiler` | `0.5.15` | `889b6ef161862938cc07b1b4123c57e302965d48` |
+| `mindie-profiler` | `0.5.15` | `609d555d84857309ac5cb8214da7309f1b783ef0` |
 | `mindie-sim` | `0.9.15` | `9dbab02f10843c7b829d6fda7e7b9ad89e4f92e5` |
 | `mindie-debugger` | `0.1.3` | `33052a2fc10c7475e4b819577870ca822efcebd0` |
 | `npu-top` | `0.3.4` | `4341003c6637e2b8b9512c7b076f80f45019e252` |
