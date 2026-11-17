@@ -125,23 +125,36 @@ class RemoteReceipts:
 
     def __init__(self, path: Path | None = None):
         self.path = Path(path or remote_receipts_path())
+        self._init_lock = threading.Lock()
+        self._initialized = False
 
     def _connect(self) -> sqlite3.Connection:
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not self._initialized or not self.path.is_file():
+            with self._init_lock:
+                if not self._initialized or not self.path.is_file():
+                    self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    init_db = sqlite3.connect(self.path, timeout=5.0)
+                    try:
+                        init_db.execute("PRAGMA busy_timeout=5000;")
+                        init_db.execute("PRAGMA journal_mode=WAL;")
+                        init_db.execute("PRAGMA synchronous=NORMAL;")
+                        init_db.execute(
+                            "CREATE TABLE IF NOT EXISTS receipts("
+                            "call_id TEXT PRIMARY KEY, "
+                            "session TEXT NOT NULL, "
+                            "tool TEXT NOT NULL, "
+                            "args_sha256 TEXT NOT NULL, "
+                            "status TEXT NOT NULL, "
+                            "started REAL NOT NULL, "
+                            "updated REAL NOT NULL)"
+                        )
+                        init_db.commit()
+                    finally:
+                        init_db.close()
+                    self._initialized = True
         db = sqlite3.connect(self.path, timeout=5.0)
         db.execute("PRAGMA busy_timeout=5000;")
-        db.execute("PRAGMA journal_mode=WAL;")
         db.execute("PRAGMA synchronous=NORMAL;")
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS receipts("
-            "call_id TEXT PRIMARY KEY, "
-            "session TEXT NOT NULL, "
-            "tool TEXT NOT NULL, "
-            "args_sha256 TEXT NOT NULL, "
-            "status TEXT NOT NULL, "
-            "started REAL NOT NULL, "
-            "updated REAL NOT NULL)"
-        )
         return db
 
     def begin(self, call_id: str, session: str, tool: str, args: dict) -> None:
