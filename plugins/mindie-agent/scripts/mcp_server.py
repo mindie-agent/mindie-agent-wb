@@ -425,7 +425,10 @@ def call_remote_surface(
         from contextlib import nullcontext
         from host_adapter import bind_remote_session
         from remote_dev.core.cancellation import request_context
+        _had_remote_session_env = "REMOTE_DEV_SESSION_ID" in os.environ
         from remote_dev.mcp.server import tool_text
+        if not _had_remote_session_env and os.environ.get("REMOTE_DEV_SESSION_ID", "").startswith("mcp-"):
+            os.environ.pop("REMOTE_DEV_SESSION_ID", None)
         from remote_dev.mcp.tools import call_tool
         from remote_dev.mcp.outcome import operation_outcome
 
