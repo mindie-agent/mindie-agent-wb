@@ -2067,7 +2067,7 @@ wheels = [
 
 [[package]]
 name = "mindie-agent-wb"
-version = "0.1.16"
+version = "0.1.17"
 source = { editable = "." }
 dependencies = [
     { name = "mindie-coordinator" },

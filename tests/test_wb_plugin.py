@@ -434,10 +434,12 @@ def test_missing_runtime_reexec_is_skipped_for_help(monkeypatch, capsys):
 
 
 def test_onboarding_references_target_workbuddy():
-    refs = PLUGIN_ROOT / "skills" / "mindie-agent" / "references"
-    workspace = (refs / "workspace-setup.md").read_text(encoding="utf-8")
-    notice = (refs / "user-notice.md").read_text(encoding="utf-8")
-    auth = (refs / "github-authentication.md").read_text(encoding="utf-8")
+    install_docs = REPO_ROOT / "docs" / "install"
+    skill_dir = PLUGIN_ROOT / "skills" / "mindie-agent"
+    refs = skill_dir / "references"
+    workspace = (install_docs / "workspace-setup.md").read_text(encoding="utf-8")
+    notice = (install_docs / "user-notice.md").read_text(encoding="utf-8")
+    auth = (install_docs / "github-authentication.md").read_text(encoding="utf-8")
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     english = (REPO_ROOT / "README.en.md").read_text(encoding="utf-8")
     assert "WorkBuddy" in workspace and "codebuddy" in workspace
@@ -451,13 +453,34 @@ def test_onboarding_references_target_workbuddy():
     assert "GCM_INTERACTIVE=never" in auth
     assert "GIT_CONFIG_COUNT" in auth
     assert "manager" in auth
+    for moved_name in ("workspace-setup.md", "user-notice.md", "github-authentication.md"):
+        assert not (refs / moved_name).exists()
+    skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    assert "\ndisable-model-invocation: true\n" in skill_text.split("---", 2)[1]
+    for runtime_doc in (skill_dir / "SKILL.md", *sorted(refs.glob("*.md"))):
+        body = runtime_doc.read_text(encoding="utf-8")
+        for forbidden_install_term in (
+            "workspace-setup.md",
+            "github-authentication.md",
+            "user-notice.md",
+            "needs_onboarding_prompt",
+            "vllm-ascend-workspace",
+            "gh auth login",
+            "/user/starred/",
+            "GitHub Star",
+            "First-Use Onboarding",
+        ):
+            assert forbidden_install_term not in body, f"{forbidden_install_term!r} leaked into {runtime_doc}"
     for text in (readme, english):
         assert "init --install-wb" in text
         assert "AskUserQuestion" in text
         assert "sharing --status" in text
-        assert "user-notice.md" in text
-        assert "github-authentication.md" in text
-        assert "workspace-setup.md" in text
+        assert "docs/install/user-notice.md" in text
+        assert "docs/install/github-authentication.md" in text
+        assert "docs/install/workspace-setup.md" in text
+        assert "skills/mindie-agent/references/user-notice.md" not in text
+        assert "skills/mindie-agent/references/github-authentication.md" not in text
+        assert "skills/mindie-agent/references/workspace-setup.md" not in text
         assert "mindie-agent/mindie-agent" in text
 
 

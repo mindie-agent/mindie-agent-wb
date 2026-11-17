@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.16-0F766E.svg" alt="Release v0.1.16"></a>
+  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.17-0F766E.svg" alt="Release v0.1.17"></a>
 </p>
 
 ## 1. 架构概览：连接器（Connector）与插件（Plugin）双重兼容
@@ -38,7 +38,7 @@ WorkBuddy 桌面端界面中的 **Connector（连接器）** 底层即基于 **A
 帮我安装一下这个 https://github.com/mindie-agent/mindie-agent-wb
 ```
 
-社区贡献默认关闭。安装成功后阅读 [用户须知](plugins/mindie-agent/skills/mindie-agent/references/user-notice.md)，并按 [工作区配置指南](plugins/mindie-agent/skills/mindie-agent/references/workspace-setup.md) 完成首次工作区引导。GitHub 登录按 [GitHub 登录引导](plugins/mindie-agent/skills/mindie-agent/references/github-authentication.md) 处理。
+社区贡献默认关闭。安装成功后阅读 [用户须知](docs/install/user-notice.md)，并按 [工作区配置指南](docs/install/workspace-setup.md) 完成首次工作区引导。GitHub 登录按 [GitHub 登录引导](docs/install/github-authentication.md) 处理。
 
 <details>
 <summary>🤖 <b>AI Agent 自动安装执行协议（点击展开 / Agent 读取本页时会自动解析执行）</b></summary>
@@ -71,7 +71,7 @@ WorkBuddy 桌面端界面中的 **Connector（连接器）** 底层即基于 **A
    GH_USER=$(gh api --hostname github.com user --jq .login) && echo "GitHub channel verified for account: $GH_USER"
    ```
 
-   未安装 `gh` 时先协助安装（macOS：`brew install gh`；Windows：`winget install --id GitHub.cli`；Ubuntu / WSL：`sudo apt update && sudo apt install -y gh`）。需要登录时按 [GitHub 登录引导](plugins/mindie-agent/skills/mindie-agent/references/github-authentication.md)：普通网络用浏览器，企业网络或浏览器授权受阻时优先 Token。网络、代理或证书失败先修传输，不把它们当成 Token 失效。
+   未安装 `gh` 时先协助安装（macOS：`brew install gh`；Windows：`winget install --id GitHub.cli`；Ubuntu / WSL：`sudo apt update && sudo apt install -y gh`）。需要登录时按 [GitHub 登录引导](docs/install/github-authentication.md)：普通网络用浏览器，企业网络或浏览器授权受阻时优先 Token。网络、代理或证书失败先修传输，不把它们当成 Token 失效。
 
 2. **保留用户授权**
 
@@ -95,7 +95,7 @@ WorkBuddy 桌面端界面中的 **Connector（连接器）** 底层即基于 **A
    ```sh
    MINDIE_TMP="${TMPDIR:-/tmp}/mindie-agent-wb-install"
    rm -rf "$MINDIE_TMP"
-   git -c core.longpaths=true -c core.autocrlf=false clone --depth 1 --branch v0.1.16 https://github.com/mindie-agent/mindie-agent-wb.git "$MINDIE_TMP"
+   git -c core.longpaths=true -c core.autocrlf=false clone --depth 1 --branch v0.1.17 https://github.com/mindie-agent/mindie-agent-wb.git "$MINDIE_TMP"
    UV_SYSTEM_CERTS=true UV_NATIVE_TLS=true uv run --no-project --python 3.13 python \
      "$MINDIE_TMP/plugins/mindie-agent/scripts/setup.py" init --install-wb --workspace-root "$PWD"
    ```
@@ -105,7 +105,7 @@ WorkBuddy 桌面端界面中的 **Connector（连接器）** 底层即基于 **A
    ```powershell
    $MINDIE_TMP = Join-Path $env:TEMP "mindie-agent-wb-install"
    if (Test-Path $MINDIE_TMP) { Remove-Item -Recurse -Force $MINDIE_TMP }
-   git -c core.longpaths=true -c core.autocrlf=false clone --depth 1 --branch v0.1.16 https://github.com/mindie-agent/mindie-agent-wb.git "$MINDIE_TMP"
+   git -c core.longpaths=true -c core.autocrlf=false clone --depth 1 --branch v0.1.17 https://github.com/mindie-agent/mindie-agent-wb.git "$MINDIE_TMP"
    $env:UV_SYSTEM_CERTS = "true"; $env:UV_NATIVE_TLS = "true"
    uv run --no-project --python 3.13 python "$MINDIE_TMP\plugins\mindie-agent\scripts\setup.py" init --install-wb --workspace-root "$PWD"
    ```
@@ -142,7 +142,7 @@ WorkBuddy 桌面端界面中的 **Connector（连接器）** 底层即基于 **A
      uv run --no-project --python 3.13 python "$WB_SOURCE/plugins/mindie-agent/scripts/setup.py" sharing --status
      ```
 
-   - 简要说明 [用户须知](plugins/mindie-agent/skills/mindie-agent/references/user-notice.md) 的三项核心契约（本地 Gitleaks 双层脱敏、仅向公开知识库提 PR 与向主仓提脱敏故障 Issue、单一 `mindie-consent.json` 权威开关可随时关闭），然后**立即调用 WorkBuddy 原生 `AskUserQuestion` 工具**（若运行在无 `AskUserQuestion` 的子命令模式，则输出编号单选卡片并等待用户回复）弹出以下 3 个问题：
+   - 简要说明 [用户须知](docs/install/user-notice.md) 的三项核心契约（本地 Gitleaks 双层脱敏、仅向公开知识库提 PR 与向主仓提脱敏故障 Issue、单一 `mindie-consent.json` 权威开关可随时关闭），然后**立即调用 WorkBuddy 原生 `AskUserQuestion` 工具**（若运行在无 `AskUserQuestion` 的子命令模式，则输出编号单选卡片并等待用户回复）弹出以下 3 个问题：
 
      ```json
      {
@@ -154,7 +154,7 @@ WorkBuddy 桌面端界面中的 **Connector（连接器）** 底层即基于 **A
            "options": [
              {
                "label": "(Recommended) 新建并初始化 vllm-ascend-workspace",
-               "description": "按 workspace-setup.md 创建聚合工作区并配置 vllm / vllm-ascend 仓库"
+               "description": "按 docs/install/workspace-setup.md 创建聚合工作区并配置 vllm / vllm-ascend 仓库"
              },
              {
                "label": "保持当前目录不变",
@@ -201,7 +201,7 @@ WorkBuddy 桌面端界面中的 **Connector（连接器）** 底层即基于 **A
      ```
 
    - **严格按序执行用户回答（用户拒绝、未回复或安装失败时绝不擅自执行）**：
-     1. **先确定/初始化工作区（得到 `WORKSPACE_ROOT`）**：按 [工作区配置指南](plugins/mindie-agent/skills/mindie-agent/references/workspace-setup.md) 处理问题 1，原生入口是 WorkBuddy 桌面端与 `codebuddy` / `cbc`，登记绝对路径 `WORKSPACE_ROOT`。
+     1. **先确定/初始化工作区（得到 `WORKSPACE_ROOT`）**：按 [工作区配置指南](docs/install/workspace-setup.md) 处理问题 1，原生入口是 WorkBuddy 桌面端与 `codebuddy` / `cbc`，登记绝对路径 `WORKSPACE_ROOT`。
      2. **再落盘社区共享与故障上报开关**：
         - 若问题 2 选择开启：
           ```sh
