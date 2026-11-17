@@ -23,20 +23,22 @@ import shutil
 import sqlite3
 import sys
 import sysconfig
+import threading
 import time
+from typing import BinaryIO
 import uuid
 
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from admission import activate, deactivate, status_facts
+from admission import activate, deactivate, has_any_active_knowledge_lease, status_facts
 from bounded import OutputLimitExceeded, run as bounded_run
 from component_catalog import COMPONENT_DESCRIPTIONS
 from component_update import trigger_background_update_if_due
 from identity import claim_bind, finish_bind, session_context
 from knowledge_cli import PRIVATE_KNOWLEDGE_CATALOG, execute_knowledge_tool
-from paths import config_path, diagnostics_config_path, read_json, remote_receipts_path, state_dir, which_native
+from paths import admission_path, config_path, diagnostics_config_path, read_json, remote_receipts_path, state_dir, which_native
 from storage_lifecycle import hold_runtime_lease
 
 MAX_YIELD_TIME_MS = 30000
@@ -75,7 +77,7 @@ def _npu_top_observation_tools() -> list[dict]:
         ]
 
 
-def _knowledge_mcp_tools() -> list[dict]:
+def _knowledge_mcp_tools(*, include_private: bool = True) -> list[dict]:
     props = {k: dict(type="string") for k in ("op", "action", "repository", "account", "domain", "project_root", "arguments")}
     props["choice"] = dict(type="string", enum=["contribute", "disabled"])
     items = [dict(
@@ -83,8 +85,9 @@ def _knowledge_mcp_tools() -> list[dict]:
         description="Native MindIE entry control for WorkBuddy (init/activate, status, deactivate, choose, sharing-enable/disable).",
         inputSchema=dict(type="object", properties=props, additionalProperties=False),
     )]
-    for item in PRIVATE_KNOWLEDGE_CATALOG:
-        items.append(dict(name=item["name"], description=item["description"], inputSchema=dict(item["inputSchema"])))
+    if include_private:
+        for item in PRIVATE_KNOWLEDGE_CATALOG:
+            items.append(dict(name=item["name"], description=item["description"], inputSchema=dict(item["inputSchema"])))
     return items
 
 
@@ -223,7 +226,7 @@ def _resolve_remote_profile() -> str:
 
 def remote_tools() -> list[dict]:
     profile = _resolve_remote_profile()
-    os.environ["REMOTE_DEV_HARNESS_PROFILE"] = profile
+    os.environ.setdefault("REMOTE_DEV_HARNESS_PROFILE", profile)
     from remote_dev.mcp.tools import list_tools
 
     return list(list_tools(profile))
@@ -265,8 +268,8 @@ def component_tools() -> list[dict]:
     return items
 
 
-def knowledge_tools() -> list[dict]:
-    return _knowledge_mcp_tools()
+def knowledge_tools(*, include_private: bool = True) -> list[dict]:
+    return _knowledge_mcp_tools(include_private=include_private)
 
 
 _CONNECTION_SESSION_ID = os.environ.get("MINDIE_MCP_CONNECTION_ID") or f"wb-mcp-{os.getpid()}-{uuid.uuid4().hex[:12]}"
@@ -378,10 +381,11 @@ def call_remote_surface(
     rpc_id=None,
     config=None,
     receipts: RemoteReceipts | None = None,
+    cancel: threading.Event | None = None,
 ) -> dict:
     os.environ.setdefault("MINDIE_DIAGNOSTICS_CONFIG", str(diagnostics_config_path(config)))
     profile = _resolve_remote_profile()
-    os.environ["REMOTE_DEV_HARNESS_PROFILE"] = profile
+    os.environ.setdefault("REMOTE_DEV_HARNESS_PROFILE", profile)
     raw_args = dict(arguments or {})
     exec_args = dict(raw_args)
     if "yield_time_ms" in exec_args and type(exec_args["yield_time_ms"]) is int:
@@ -396,7 +400,8 @@ def call_remote_surface(
         session, bind_id = claim["session"], claim.get("bind_id")
         if session != _CONNECTION_SESSION_ID and hasattr(receipt_store, "set_session"):
             receipt_store.set_session(call_id, session)
-        root = state_dir(config) / "remote" / session
+        explicit_remote = os.environ.get("REMOTE_DEV_STATE_DIR")
+        root = Path(explicit_remote) if explicit_remote else (state_dir(config) / "remote")
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
     except Exception as exc:
         if reserved:
@@ -414,16 +419,22 @@ def call_remote_surface(
             except (OSError, sqlite3.Error):
                 pass
         return _admission_failure(exc)
-    os.environ["REMOTE_DEV_SESSION_ID"] = session
-    os.environ["REMOTE_DEV_STATE_DIR"] = str(root)
     succeeded = False
     outcome = "failed"
     try:
+        from contextlib import nullcontext
+        from host_adapter import bind_remote_session
+        from remote_dev.core.cancellation import request_context
+        _had_remote_session_env = "REMOTE_DEV_SESSION_ID" in os.environ
         from remote_dev.mcp.server import tool_text
+        if not _had_remote_session_env and os.environ.get("REMOTE_DEV_SESSION_ID", "").startswith("mcp-"):
+            os.environ.pop("REMOTE_DEV_SESSION_ID", None)
         from remote_dev.mcp.tools import call_tool
         from remote_dev.mcp.outcome import operation_outcome
 
-        raw = call_tool(name, exec_args, profile=profile)
+        ctx_mgr = request_context(cancel) if cancel is not None else nullcontext()
+        with bind_remote_session(session, state_root_dir=root), ctx_mgr:
+            raw = call_tool(name, exec_args, profile=profile)
         outcome = operation_outcome(name, raw)
         is_error = outcome != "succeeded"
         succeeded = not is_error
@@ -465,6 +476,7 @@ def call_tools_surface(
     rpc_id=None,
     config=None,
     receipts: RemoteReceipts | None = None,
+    cancel: threading.Event | None = None,
 ) -> dict:
     args = dict(arguments or {})
     if name == "debugger" and "argv" not in args and isinstance(args.get("action"), str):
@@ -570,6 +582,7 @@ def call_tools_surface(
                 max_output=COMPONENT_CAPTURE_LIMIT_BYTES,
                 env=child_env,
                 cwd=cwd,
+                cancel=cancel,
             )
             reply_limit = budget * 4
             stdout_bytes = proc.stdout.encode("utf-8", errors="replace")
@@ -686,7 +699,14 @@ def call_knowledge_surface(
     return _finalize_accounting(result, succeeded, bind_id=bind_id, config=config)
 
 
-def handle_rpc(request: dict, surface: str = "tools", *, config=None) -> dict | None:
+def handle_rpc(
+    request: dict,
+    surface: str = "tools",
+    *,
+    config=None,
+    receipts: RemoteReceipts | None = None,
+    cancel: threading.Event | None = None,
+) -> dict | None:
     """Process one JSON-RPC 2.0 request or notification for `remote`, `tools`, or `knowledge`."""
     if not isinstance(request, dict):
         return dict(jsonrpc="2.0", id=None, error=dict(code=-32600, message="Invalid Request: JSON-RPC request must be an object"))
@@ -704,7 +724,7 @@ def handle_rpc(request: dict, surface: str = "tools", *, config=None) -> dict | 
             id=req_id,
             result=dict(
                 protocolVersion="2025-11-25",
-                capabilities=dict(tools=dict(listChanged=False)),
+                capabilities=dict(tools=dict(listChanged=True)),
                 serverInfo=dict(name=f"mindie-wb-{surface}",
                                 version=read_json(HERE.parent / "plugin.json")["version"]),
             ),
@@ -715,7 +735,7 @@ def handle_rpc(request: dict, surface: str = "tools", *, config=None) -> dict | 
         if surface == "remote":
             tools = remote_tools()
         elif surface == "knowledge":
-            tools = knowledge_tools()
+            tools = knowledge_tools(include_private=has_any_active_knowledge_lease(config))
         else:
             tools = component_tools()
         return dict(jsonrpc="2.0", id=req_id, result=dict(tools=tools))
@@ -730,58 +750,44 @@ def handle_rpc(request: dict, surface: str = "tools", *, config=None) -> dict | 
         if not isinstance(tool_name, str) or not tool_name:
             return dict(jsonrpc="2.0", id=req_id, error=dict(code=-32602, message="Invalid tool name"))
         if surface == "remote":
-            out = call_remote_surface(tool_name, arguments, meta=meta, rpc_id=req_id, config=config)
+            out = call_remote_surface(
+                tool_name, arguments, meta=meta, rpc_id=req_id, config=config, receipts=receipts, cancel=cancel
+            )
         elif surface == "knowledge":
             out = call_knowledge_surface(tool_name, arguments, meta=meta, config=config)
         else:
-            out = call_tools_surface(tool_name, arguments, meta=meta, rpc_id=req_id, config=config)
+            out = call_tools_surface(
+                tool_name, arguments, meta=meta, rpc_id=req_id, config=config, receipts=receipts, cancel=cancel
+            )
         return dict(jsonrpc="2.0", id=req_id, result=out)
     return dict(jsonrpc="2.0", id=req_id, error=dict(code=-32601, message=f"Method not found: {method}"))
 
 
-def serve(surface: str = "tools") -> int:
-    """Run the line-delimited JSON-RPC 2.0 loop over stdin/stdout."""
+def serve(surface: str = "tools", *, config=None, stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> int:
+    """Run the concurrent dual-framing JSON-RPC 2.0 loop over stdin/stdout."""
     if surface == "components":
         surface = "tools"
     if surface not in {"remote", "tools", "knowledge"}:
         raise ValueError(f"unknown MindIE MCP surface: {surface}")
-    with hold_runtime_lease():
-        return _serve_lines(surface)
+    from host_adapter import hold_combined_runtime_lease, serve_concurrent_stdio
 
-
-def _serve_lines(surface: str) -> int:
-    for raw_line in sys.stdin.buffer:
-        raw_line = raw_line.strip()
-        if not raw_line:
-            continue
-        try:
-            req = json.loads(raw_line.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-            resp = dict(jsonrpc="2.0", id=None, error=dict(code=-32700, message=f"Parse error: {type(exc).__name__}: {exc}"))
-            sys.stdout.buffer.write((canonical(resp) + "\n").encode("utf-8"))
-            sys.stdout.buffer.flush()
-            continue
-        resp = handle_rpc(req, surface)
-        if resp is not None:
-            sys.stdout.buffer.write((canonical(resp) + "\n").encode("utf-8"))
-            sys.stdout.buffer.flush()
-    return 0
+    receipts = RemoteReceipts(remote_receipts_path(config)) if surface != "knowledge" else None
+    with hold_combined_runtime_lease():
+        return serve_concurrent_stdio(
+            surface=surface,
+            rpc_handler=lambda req, cancel_ev: handle_rpc(req, surface, config=config, receipts=receipts, cancel=cancel_ev),
+            watched_files=(config_path(config), admission_path(config)),
+            stdin=stdin,
+            stdout=stdout,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     args = [x for x in argv if x != "--once"]
     surface = args[0] if args else "tools"
-    if "--once" not in argv:
-        from remote_dev.mcp.catalog_refresh import profile_selection, serve_selected
-        def _select():
-            sel_argv, sel_env = profile_selection(
-                config_path(), HERE, surface, config_env="MINDIE_AGENT_CONFIG", plugin_env="WB_PLUGIN_ROOT",
-            )
-            return sel_argv, {**sel_env, "MINDIE_MCP_CONNECTION_ID": _CONNECTION_SESSION_ID}
-        with hold_runtime_lease():
-            return serve_selected(_select)
-    return serve(surface)
+    with hold_runtime_lease():
+        return serve(surface)
 
 
 if __name__ == "__main__":

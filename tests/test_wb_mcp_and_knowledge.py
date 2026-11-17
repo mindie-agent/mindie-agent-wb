@@ -14,10 +14,18 @@ import mcp_server
 SESSION_A = "454c6ee9-afea-47be-8188-abb9c7fb1f26"
 
 
-def test_complete_mcp_tool_surfaces_exposed():
+def test_complete_mcp_tool_surfaces_exposed(tmp_path: Path):
+    import admission
+
     remote_resp = mcp_server.handle_rpc({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, "remote")
     tools_resp = mcp_server.handle_rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, "tools")
-    know_resp = mcp_server.handle_rpc({"jsonrpc": "2.0", "id": 3, "method": "tools/list"}, "knowledge")
+    unactivated_know = mcp_server.handle_rpc({"jsonrpc": "2.0", "id": 3, "method": "tools/list"}, "knowledge")
+    assert {t["name"] for t in unactivated_know["result"]["tools"]} == {"mindie_entry"}
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    admission.activate(SESSION_A, ws)
+    know_resp = mcp_server.handle_rpc({"jsonrpc": "2.0", "id": 4, "method": "tools/list"}, "knowledge")
 
     remote_names = {t["name"] for t in remote_resp["result"]["tools"]}
     tool_names = {t["name"] for t in tools_resp["result"]["tools"]}

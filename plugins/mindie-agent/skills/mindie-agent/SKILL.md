@@ -19,7 +19,7 @@ description: Manually enable MindIE L1-L4 graded knowledge, domain skills, feedb
   2. `knowledge_explain`: batch-read selected `mindie://<domain>/units/<id>@<revision>` `refs=[...]` with observed `conditions`, visible `known_refs=[...]`, and `token_budget` (default `16000`).
 - **Long-horizon runs & de-biased exploration**:
   - `coordinator` (`execution_id`) and `remote-dev` (`job_id`) persist authoritative run state—inspect existing handles before resubmitting after an interruption. Pass explicit `--time-window`, `--step-window`, or `--full-range` and `--clock-domain` to `mindie_profiler`.
-  - For multi-round optimization sweeps, you may optionally track hypotheses via `<plugin_root>/scripts/experiment_ledger.py`. When repeated `L3` attempts stall on a structural bottleneck, query `L4` structural mutators and optionally spawn an isolated `Agent` subagent seeded with `exploration_context.subagent_fact_pack.prompt_brief`, verifying multi-factor changes with leave-one-out ablations on the operator's real interface.
+  - When repeated `L3` attempts stall on a structural bottleneck, query `L4` structural mutators (`mode="explore"`) and optionally spawn an isolated `Agent` subagent seeded with `exploration_context.subagent_fact_pack.prompt_brief`, verifying multi-factor changes with leave-one-out ablations on the operator's real interface.
 
 ## 3. Non-Intrusive First-Use Onboarding
 
@@ -31,6 +31,6 @@ description: Manually enable MindIE L1-L4 graded knowledge, domain skills, feedb
 
 ## 4. Progressive References (Load Only When Needed)
 
-- Detailed schemas, profiler flags & optional ledger helpers: [references/domain-skills.md](references/domain-skills.md)
+- Detailed schemas, profiler flags & NPU lease discipline: [references/domain-skills.md](references/domain-skills.md)
 - Session lifecycle, `/mindie-agent deactivate` & `Stop` capture: [references/activation-lifecycle.md](references/activation-lifecycle.md)
 - Workspace setup & GitHub sign-in: [references/workspace-setup.md](references/workspace-setup.md), [references/github-authentication.md](references/github-authentication.md)

@@ -38,7 +38,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from paths import apply_enterprise_transport_env, config_home, config_path, data_home, read_json
+from paths import admission_path, apply_enterprise_transport_env, config_home, config_path, data_home, read_json
 
 HOOK_EXEC_BUDGET = 8.0
 HOOK_CLEANUP_GRACE = 2.0
@@ -46,6 +46,7 @@ HOOK_TOTAL = HOOK_EXEC_BUDGET + HOOK_CLEANUP_GRACE
 HOOK_LOCK_BUDGET = 2.0
 BOOTSTRAP_TOTAL = 540.0
 SETUP_REEXEC_GRACE = 15.0
+_STDLIB_POPEN = subprocess.Popen
 _HOOK_EVENT_NAMES = {
     "session-start": "SessionStart",
     "user-prompt-expansion": "UserPromptExpansion",
@@ -284,6 +285,17 @@ def _dispatch(argv: list[str]) -> int:
                     break
             else:
                 raise RuntimeError("active plugin payload does not match its recorded version")
+    if (
+        argv == ["hook", "stop"]
+        and subprocess.Popen is _STDLIB_POPEN
+        and not admission_path().is_file()
+    ):
+        from identity import MAX_HOOK_BYTES, parse_hook
+
+        parse_hook(sys.stdin.buffer.read(MAX_HOOK_BYTES + 1))
+        sys.stdout.buffer.write(b'{"suppressOutput": true}\n')
+        sys.stdout.buffer.flush()
+        return 0
     if (
         target_py is not None
         and (_norm_python_path(sys.executable) != _norm_python_path(target_py)

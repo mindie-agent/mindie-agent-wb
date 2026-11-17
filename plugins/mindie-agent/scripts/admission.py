@@ -49,6 +49,33 @@ def knowledge_lease(session: str, *, config: str | Path | None = None) -> dict |
     return gate(config).knowledge_lease(session)
 
 
+def has_any_active_knowledge_lease(config: str | Path | None = None) -> bool:
+    """Strictly read-only check whether any session has an active manual `/mindie-agent` lease."""
+    import sqlite3
+
+    path = admission_path(config)
+    if not path.is_file():
+        return False
+    try:
+        uri = path.resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=2.0)
+    except TimeoutError:
+        raise
+    except (OSError, sqlite3.Error, ValueError):
+        return False
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM leases WHERE enabled = 1 AND entry_enabled = 1 LIMIT 1"
+        ).fetchone()
+        return row is not None
+    except TimeoutError:
+        raise
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+
+
 def activate(
     session: str,
     project_root: str | Path,

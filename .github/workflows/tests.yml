@@ -20,6 +20,44 @@ jobs:
       - name: Run LF line-ending check
         run: python3 .github/scripts/check_lf_eol.py
 
+  smoke:
+    name: Out-of-Tree Staged Plugin Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Stage plugin outside checkout and verify cold contracts
+        run: |
+          SMOKE_ROOT="$(mktemp -d)"
+          trap 'rm -rf "$SMOKE_ROOT"' EXIT
+          mkdir -p "$SMOKE_ROOT/home" "$SMOKE_ROOT/cfg" "$SMOKE_ROOT/data" "$SMOKE_ROOT/diag" "$SMOKE_ROOT/plugin"
+          cp -R plugins .codebuddy-plugin product-contract.json harness-compatibility.json pyproject.toml "$SMOKE_ROOT/plugin/"
+          cd "$SMOKE_ROOT/home"
+          HOME="$SMOKE_ROOT/home" \
+          MINDIE_CONFIG_HOME="$SMOKE_ROOT/cfg" \
+          MINDIE_DATA_HOME="$SMOKE_ROOT/data" \
+          MINDIE_DIAGNOSTICS_ROOT="$SMOKE_ROOT/diag" \
+          python3 -I - "$SMOKE_ROOT/plugin/plugins/mindie-agent" <<'PY'
+          import json, subprocess, sys
+          from pathlib import Path
+          plugin_dir = Path(sys.argv[1])
+          dot_mcp = json.loads((plugin_dir / ".mcp.json").read_text(encoding="utf-8"))
+          assert dot_mcp["mcpServers"]["mindie-knowledge"]["alwaysLoad"] is False
+          assert dot_mcp["mcpServers"]["mindie-knowledge"]["defer_loading"] is True
+          sys.path.insert(0, str(plugin_dir / "scripts"))
+          import host_adapter
+          lock = host_adapter.verify_seed_bundle(plugin_dir)
+          assert lock["schema"] == "mindie-harness-seed/1"
+          proc = subprocess.run(
+              [sys.executable, "-I", str(plugin_dir / "scripts" / "mindie_launch.py"), "hook", "stop"],
+              input='{"session_id":"454c6ee9-afea-47be-8188-abb9c7fb1f26"}',
+              text=True, capture_output=True, timeout=5, check=True,
+          )
+          assert json.loads(proc.stdout) == {"suppressOutput": True}
+          PY
+
   continuity:
     uses: ./.github/workflows/task-continuity.yml
 
@@ -28,9 +66,10 @@ jobs:
 
   release-ready:
     name: release-ready
-    needs: [lf-gate, continuity, upgrade]
+    needs: [lf-gate, smoke, continuity, upgrade]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - env:
           RESULTS: ${{ toJSON(needs) }}

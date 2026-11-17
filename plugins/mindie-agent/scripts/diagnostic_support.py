@@ -131,7 +131,7 @@ def _close_fd(fd: int) -> None:
 
 
 def _read_bytes_bounded(path: Path, limit: int = 16384, *, head_only: bool = False, tail_only: bool = False) -> bytes | None:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
     fd = -1
     try:
         fd = os.open(str(path), flags)
@@ -468,7 +468,7 @@ def _scan_subdirs_bounded(parent: Path, *, prefix: str = "", suffix: str = "") -
                 if idx >= 512 or len(matches) >= 4:
                     break
                 if (not prefix or entry.name.startswith(prefix)) and (not suffix or entry.name.endswith(suffix)):
-                    if entry.is_dir(follow_symlinks=False):
+                    if entry.is_dir():
                         matches.append(Path(entry.path))
     except TimeoutError:
         raise
@@ -656,8 +656,8 @@ def _verified_failure_ids(comp_name: str, *, invocation_token: str | None = None
             for idx, entry in enumerate(it):
                 if idx >= 64:
                     break
-                if entry.name.endswith(".jsonl") and entry.is_file(follow_symlinks=False):
-                    cands.append((entry.stat(follow_symlinks=False).st_mtime_ns, Path(entry.path)))
+                if entry.name.endswith(".jsonl") and entry.is_file():
+                    cands.append((entry.stat().st_mtime_ns, Path(entry.path)))
     except TimeoutError:
         raise
     except OSError:
