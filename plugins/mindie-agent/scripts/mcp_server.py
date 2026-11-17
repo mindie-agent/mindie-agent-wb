@@ -96,12 +96,8 @@ def canonical(value) -> str:
 
 
 def remote_timeout(
-    name: str,
-    args: dict | None = None,
-    *,
-    native_wait_ms: int | float | None = None,
-    grace: float = REMOTE_GRACE_SECONDS,
-    minimum: float = REMOTE_MIN_BUDGET_SECONDS,
+    name: str, args: dict | None = None, *, native_wait_ms: int | float | None = None,
+    grace: float = REMOTE_GRACE_SECONDS, minimum: float = REMOTE_MIN_BUDGET_SECONDS,
 ) -> float:
     """Compute `outer_timeout >= max(minimum, inner_wait + grace)`."""
     if isinstance(grace, bool) or not isinstance(grace, (int, float)) or not math.isfinite(grace) or grace <= 0:
@@ -116,8 +112,7 @@ def remote_timeout(
             value = args.get(key)
             if not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value) and value > 0:
                 explicit_ms = max(explicit_ms, float(value))
-    inner_seconds = max(float(native_wait_ms) / 1000.0, explicit_ms / 1000.0)
-    return max(float(minimum), inner_seconds + float(grace))
+    return max(float(minimum), max(float(native_wait_ms), explicit_ms) / 1000.0 + float(grace))
 
 
 class RemoteReceipts:
@@ -125,23 +120,30 @@ class RemoteReceipts:
 
     def __init__(self, path: Path | None = None):
         self.path = Path(path or remote_receipts_path())
+        self._init_lock = threading.Lock()
+        self._initialized = False
 
     def _connect(self) -> sqlite3.Connection:
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not self._initialized or not self.path.is_file():
+            with self._init_lock:
+                if not self._initialized or not self.path.is_file():
+                    self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    init_db = sqlite3.connect(self.path, timeout=5.0)
+                    try:
+                        for stmt in (
+                            "PRAGMA busy_timeout=5000;", "PRAGMA journal_mode=WAL;", "PRAGMA synchronous=NORMAL;",
+                            "CREATE TABLE IF NOT EXISTS receipts(call_id TEXT PRIMARY KEY, session TEXT NOT NULL, "
+                            "tool TEXT NOT NULL, args_sha256 TEXT NOT NULL, status TEXT NOT NULL, "
+                            "started REAL NOT NULL, updated REAL NOT NULL)",
+                        ):
+                            init_db.execute(stmt)
+                        init_db.commit()
+                    finally:
+                        init_db.close()
+                    self._initialized = True
         db = sqlite3.connect(self.path, timeout=5.0)
         db.execute("PRAGMA busy_timeout=5000;")
-        db.execute("PRAGMA journal_mode=WAL;")
         db.execute("PRAGMA synchronous=NORMAL;")
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS receipts("
-            "call_id TEXT PRIMARY KEY, "
-            "session TEXT NOT NULL, "
-            "tool TEXT NOT NULL, "
-            "args_sha256 TEXT NOT NULL, "
-            "status TEXT NOT NULL, "
-            "started REAL NOT NULL, "
-            "updated REAL NOT NULL)"
-        )
         return db
 
     def begin(self, call_id: str, session: str, tool: str, args: dict) -> None:
