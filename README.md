@@ -20,7 +20,7 @@ WorkBuddy 桌面端界面中的 **Connector（连接器）** 底层即基于 **A
    - 声明 `extensions["ai.workbuddy"]` 双语展示元数据、示例 Prompt 与超时策略（`660s` 远端/组件预算、`210s` 知识预算）。
 2. **Native Agent Plugin 完整能力**（[`.codebuddy-plugin/plugin.json`](plugins/mindie-agent/.codebuddy-plugin/plugin.json) + [`.mcp.json`](plugins/mindie-agent/.mcp.json) + [`hooks/hooks.json`](plugins/mindie-agent/hooks/hooks.json) + [`skills/mindie-agent/SKILL.md`](plugins/mindie-agent/skills/mindie-agent/SKILL.md)）：
    - 挂载 `SessionStart`、`UserPromptExpansion`、`UserPromptSubmit`、`PreToolUse`、`Stop` 五类生命周期 Hook。
-   - 默认加载（`alwaysLoad: true`, `defer_loading: false`）全部三个 stdio MCP Server，并启用 `REMOTE_DEV_HARNESS_PROFILE=wb` 原生镜像。
+   - 默认加载（`alwaysLoad: true`, `defer_loading: false`）确定性 `mindie-remote-dev` 与 `mindie-tools` 两个 stdio MCP Server，并将 `mindie-knowledge` 设为按需延迟加载（`alwaysLoad: false`, `defer_loading: true`，未激活 `/mindie-agent` 时不暴露 `knowledge_*` 工具），同时启用 `REMOTE_DEV_HARNESS_PROFILE=wb` 原生镜像。
 
 ## 2. 完整暴露的 MCP 工具矩阵（共 53 项）
 

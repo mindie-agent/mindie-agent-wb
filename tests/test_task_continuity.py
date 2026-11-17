@@ -135,11 +135,14 @@ def test_deterministic_tools_execute_without_meta_or_pretool_bind_while_knowledg
 
     rem_args = {"host": "auth.example", "port": 22, "action": "status"}
     wb_sess = "wb-session-replay-guard"
+    replay_receipts = mcp_server.RemoteReceipts(tmp_path / "replay-receipts.sqlite3")
     publish_bind(wb_sess, "remote", "remote_auth", rem_args)
     rem_req = {"jsonrpc": "2.0", "id": 99, "method": "tools/call", "params": {"name": "remote_auth", "arguments": rem_args}}
-    assert mcp_server.handle_rpc(rem_req, "remote")["result"]["isError"] is False
+    assert mcp_server.handle_rpc(rem_req, "remote", receipts=replay_receipts)["result"]["isError"] is False
     publish_bind(wb_sess, "remote", "remote_auth", rem_args)
-    assert mcp_server.handle_rpc(rem_req, "remote")["result"]["isError"] is True
-    assert mcp_server.handle_rpc({**rem_req, "id": 100}, "remote")["result"]["isError"] is False
-    assert os.environ["REMOTE_DEV_SESSION_ID"] == wb_sess
+    assert mcp_server.handle_rpc(rem_req, "remote", receipts=replay_receipts)["result"]["isError"] is True
+    assert mcp_server.handle_rpc({**rem_req, "id": 100}, "remote", receipts=replay_receipts)["result"]["isError"] is False
+    assert "REMOTE_DEV_SESSION_ID" not in os.environ
+    with sqlite3.connect(replay_receipts.path) as db:
+        assert [row[0] for row in db.execute("SELECT session FROM receipts ORDER BY started")] == [wb_sess, wb_sess]
 

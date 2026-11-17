@@ -8,7 +8,6 @@
 - `knowledge_feedback`: Records `discovered`, `loaded`, `applied`, or `evaluated` (`supported` | `refuted` | `inconclusive`) usage events.
 - `knowledge_distill`: Distills verified milestone (`task_state="verified_milestone"`) or completed (`task_state="completed"`) evidence into graded `L1–L4` units. `L4` mutators require a verified leave-one-out ablation receipt.
 - `knowledge_sync`: Synchronizes configured public knowledge feeds.
-- `experiment_ledger.py` & `rsi_loop.py`: Evaluate 4-stage RSI candidate verification gates (`fingerprint`, `gate`, `judge`, `append`, `render`) and manage resumable `profile -> consult -> propose -> measure -> learn` rounds over `experiment-ledger.jsonl` and `PROGRESS.md`.
 
 ## 2. Deterministic Component & Fleet Observation Tools (`mindie-tools` MCP)
 

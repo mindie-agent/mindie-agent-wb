@@ -55,10 +55,14 @@ def test_plugin_manifests_and_connector_mcp_layout():
     # 5. Dual MCP configs (`.mcp.json` for Agent CLI + `mcp.json` for Agent Plugins 1.0.0 Connector)
     dot_mcp = json.loads((PLUGIN_ROOT / ".mcp.json").read_text(encoding="utf-8"))
     assert set(dot_mcp["mcpServers"]) == {"mindie-remote-dev", "mindie-tools", "mindie-knowledge"}
-    for srv in dot_mcp["mcpServers"].values():
+    for srv_name, srv in dot_mcp["mcpServers"].items():
         assert srv["type"] == "stdio"
-        assert srv["alwaysLoad"] is True
-        assert srv["defer_loading"] is False
+        if srv_name == "mindie-knowledge":
+            assert srv["alwaysLoad"] is False
+            assert srv["defer_loading"] is True
+        else:
+            assert srv["alwaysLoad"] is True
+            assert srv["defer_loading"] is False
 
     connector_mcp = json.loads((PLUGIN_ROOT / "mcp.json").read_text(encoding="utf-8"))
     assert connector_mcp["$schema"] == "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"

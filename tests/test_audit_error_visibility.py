@@ -315,7 +315,9 @@ def test_cursor_commit_does_not_invent_success_outcome():
     assert out["result"]["execution_outcome"] == "success"
     assert out["result"]["status"] == "local_recording_failed"
     assert out["result"]["operation_completed"] is True
-    assert "success" not in {out["result"].get("outcome")}
+    assert out["result"]["outcome"] == "success"
+    assert out["result"]["receipt_unconfirmed"] is True
+    assert "disk full" in out["result"]["receipt_warning"]
 
 
 def test_background_update_spawn_failure_writes_failed_status(

@@ -129,13 +129,19 @@ def _cursor_commit_failure(
 ) -> dict[str, Any]:
     from remote_dev.result import recording_failure
 
+    orig_outcome = result.get("outcome")
     if not (
-        isinstance(result.get("outcome"), str)
+        isinstance(orig_outcome, str)
         and isinstance(result.get("status"), str)
         and isinstance(result.get("summary"), str)
     ):
         raise exc
-    return recording_failure(payload, exc, stage="wb_cursor_commit", operation_completed=True)
+    out = recording_failure(payload, exc, stage="wb_cursor_commit", operation_completed=True)
+    if orig_outcome in {"success", "cancelled", "cancellation-requested", "already-finished"}:
+        out["result"]["outcome"] = orig_outcome
+        out["result"].setdefault("receipt_warning", f"{type(exc).__name__}: {exc}")
+        out["result"]["receipt_unconfirmed"] = True
+    return out
 
 
 def ensure_wb_knowledge_registry() -> None:
