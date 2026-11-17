@@ -15,7 +15,7 @@ jobs:
     secrets:
       MINDIE_RELEASE_DEPLOY_KEY: ${{ secrets.MINDIE_RELEASE_DEPLOY_KEY }}
     with:
-      release-notes-path: docs/releases/mindie-agent-wb-0.1.15.md
+      release-notes-path: docs/releases/mindie-agent-wb-0.1.16.md
       version-files: |
         pyproject.toml
         plugins/mindie-agent/plugin.json
@@ -25,6 +25,7 @@ jobs:
       setup-command: |
         uv sync --all-extras --no-install-project
       test-command: |
+        git fetch --no-tags --depth=1 origin refs/tags/v0.1.5:refs/tags/v0.1.5 refs/tags/v0.1.14:refs/tags/v0.1.14
         .venv/bin/python .github/scripts/check_lf_eol.py
         .venv/bin/python -m pytest -q -m "not live_npu"
       build-command: |

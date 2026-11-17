@@ -86,6 +86,7 @@ def test_product_and_harness_compatibility_contracts_and_module_invariants(monke
     assert product["schema"] == "mindie-product-contract/1"
     assert product["harness"] == "workbuddy"
     assert set(product["components"]) == {
+        "mindie-harness",
         "mindie-knowledge",
         "remote-dev",
         "mindie-diagnostics",

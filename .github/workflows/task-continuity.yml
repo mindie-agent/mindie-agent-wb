@@ -31,7 +31,6 @@ jobs:
           UV_CACHE_DIR: ${{ runner.temp }}/mindie-uv
         run: |
           uv sync --locked --no-editable --no-install-project --extra test --python 3.12
-          uv pip install --no-deps "mindie-harness @ git+https://github.com/mindie-agent/harness.git@main"
       - name: Verify failure isolation and truthful results
         run: uv run --no-sync python -m pytest -q -m "not live_npu"
 
