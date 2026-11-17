@@ -1,7 +1,7 @@
 # MindIE Agent for Tencent WorkBuddy (`mindie-agent-wb`)
 
 <p>
-  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.16-0F766E.svg" alt="Release v0.1.16"></a>
+  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.17-0F766E.svg" alt="Release v0.1.17"></a>
 </p>
 
 Native plugin and UI Connector adapter for **Tencent WorkBuddy** (and its bundled `@genie/agent-cli` / `codebuddy` runtime), exposing the complete suite of **40 MindIE MCP tools**, lifecycle hooks, and L1–L4 graded knowledge skills.
@@ -14,7 +14,7 @@ Native plugin and UI Connector adapter for **Tencent WorkBuddy** (and its bundle
 
 ## Installation
 
-Ask WorkBuddy or any terminal-capable agent to install this repository, then follow the protocol below. Community contribution stays off. After a successful mount, read the [contribution notice](plugins/mindie-agent/skills/mindie-agent/references/user-notice.md) and the [workspace setup guide](plugins/mindie-agent/skills/mindie-agent/references/workspace-setup.md). Sign in to GitHub with the [GitHub sign-in guide](plugins/mindie-agent/skills/mindie-agent/references/github-authentication.md).
+Ask WorkBuddy or any terminal-capable agent to install this repository, then follow the protocol below. Community contribution stays off. After a successful mount, read the [contribution notice](docs/install/user-notice.md) and the [workspace setup guide](docs/install/workspace-setup.md). Sign in to GitHub with the [GitHub sign-in guide](docs/install/github-authentication.md).
 
 ```text
 帮我安装一下这个 https://github.com/mindie-agent/mindie-agent-wb
@@ -34,7 +34,7 @@ From the pinned release (macOS / Linux / WSL2):
 ```bash
 MINDIE_TMP="${TMPDIR:-/tmp}/mindie-agent-wb-install"
 rm -rf "$MINDIE_TMP"
-git -c core.longpaths=true -c core.autocrlf=false clone --depth 1 --branch v0.1.16 https://github.com/mindie-agent/mindie-agent-wb.git "$MINDIE_TMP"
+git -c core.longpaths=true -c core.autocrlf=false clone --depth 1 --branch v0.1.17 https://github.com/mindie-agent/mindie-agent-wb.git "$MINDIE_TMP"
 UV_SYSTEM_CERTS=true UV_NATIVE_TLS=true uv run --no-project --python 3.13 python \
   "$MINDIE_TMP/plugins/mindie-agent/scripts/setup.py" init --install-wb --workspace-root "$PWD"
 ```
@@ -44,7 +44,7 @@ On Windows PowerShell 5.1 / 7:
 ```powershell
 $MINDIE_TMP = Join-Path $env:TEMP "mindie-agent-wb-install"
 if (Test-Path $MINDIE_TMP) { Remove-Item -Recurse -Force $MINDIE_TMP }
-git -c core.longpaths=true -c core.autocrlf=false clone --depth 1 --branch v0.1.16 https://github.com/mindie-agent/mindie-agent-wb.git "$MINDIE_TMP"
+git -c core.longpaths=true -c core.autocrlf=false clone --depth 1 --branch v0.1.17 https://github.com/mindie-agent/mindie-agent-wb.git "$MINDIE_TMP"
 $env:UV_SYSTEM_CERTS = "true"; $env:UV_NATIVE_TLS = "true"
 uv run --no-project --python 3.13 python "$MINDIE_TMP\plugins\mindie-agent\scripts\setup.py" init --install-wb --workspace-root "$PWD"
 ```
@@ -76,14 +76,14 @@ WB_SOURCE="${MINDIE_DATA_HOME:-$HOME/.local/share/mindie-agent}/wb-source"
 uv run --no-project --python 3.13 python "$WB_SOURCE/plugins/mindie-agent/scripts/setup.py" sharing --status
 ```
 
-Briefly present the [contribution notice](plugins/mindie-agent/skills/mindie-agent/references/user-notice.md) and **call WorkBuddy's native `AskUserQuestion` tool** (`multiSelect: false`, first option prefixed with `(Recommended)`; fall back to a numbered list card only if `AskUserQuestion` is unavailable) with these 3 questions:
+Briefly present the [contribution notice](docs/install/user-notice.md) and **call WorkBuddy's native `AskUserQuestion` tool** (`multiSelect: false`, first option prefixed with `(Recommended)`; fall back to a numbered list card only if `AskUserQuestion` is unavailable) with these 3 questions:
 
 1. **Local Development Workspace `vllm-ascend-workspace`** (`header: "Workspace"`): `(Recommended) Initialize vllm-ascend-workspace` vs `Keep current directory as workspace` vs `Use an existing workspace directory`.
 2. **Community Knowledge Sharing & Automated Fault Reporting** (`header: "Sharing"`): `(Recommended) Enable Community Sharing & Fault Reporting` vs `Keep Local-Only Mode`.
 3. **Would you like to give mindie-agent a Star on GitHub ⭐?** (`header: "GitHub Star"`): `(Recommended) Sure, star it ⭐` (`Star mindie-agent/mindie-agent on GitHub to support the project`) vs `Maybe later` (`Continue without starring`).
 
 Apply the user's choices in strict order:
-1. Resolve/initialize the workspace first (`WORKSPACE_ROOT`) following [workspace-setup.md](plugins/mindie-agent/skills/mindie-agent/references/workspace-setup.md).
+1. Resolve/initialize the workspace first (`WORKSPACE_ROOT`) following [docs/install/workspace-setup.md](docs/install/workspace-setup.md).
 2. Persist community sharing & fault reporting via `uv run --no-project --python 3.13 python "$WB_SOURCE/plugins/mindie-agent/scripts/setup.py" sharing --enable --project-root "$WORKSPACE_ROOT"` (or `--disable`).
 3. Run the following only after an explicit yes on the Star question (never star on silence, refusal, or a failed install):
 

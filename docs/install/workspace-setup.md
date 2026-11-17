@@ -1,7 +1,7 @@
 # Development workspace setup
 
 Run this flow during normal installation and first-use setup, immediately after
-presenting the existing MindIE Agent user notice. The offer is part of setup even
+presenting the existing [MindIE Agent user notice](user-notice.md). The offer is part of setup even
 when contribution is disabled. Reuse the user's creation, initialization and
 registration decisions; ordinary tasks and updates do not repeat onboarding.
 
@@ -74,7 +74,7 @@ Plugin and Connector mounting is a separate step. Only
 `uv run --no-project --python 3.13 python plugins/mindie-agent/scripts/setup.py install-wb` call
 `install_workbuddy_plugin`. Bare `init` writes the MindIE profile (`wb.json`)
 and does not mount either surface. Confirm both mounts with the success
-signals in the repository README before reporting installation complete.
+signals in the [repository README](../../README.md) before reporting installation complete.
 
 Use available native tools or UI automation to complete the action. If the agent
 cannot operate the required folder picker, give the selected path and that one
