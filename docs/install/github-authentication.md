@@ -4,7 +4,15 @@ Use this flow for installation, first-use configuration or an authentication
 failure. Keep the user in the existing setup conversation; ordinary
 tasks do not need another login check or choice.
 
-1. Install `gh` if missing. Run
+**`gh` is optional for installation and never a blocker.** Install with
+`uv run https://github.com/mindie-agent/mindie-agent/releases/latest/download/install.py --host wb`
+first. Then use `gh` only to make the sharing recommendation `gh`-aware: when
+`gh` is logged in recommend `contribute`, otherwise recommend `local-only`.
+A missing `gh`, a network failure, or a declined login never blocks the plugin,
+the remote-dev tools, or local knowledge use.
+
+1. Only when the user wants GitHub-backed contribution, install `gh` if
+   missing; otherwise keep the install `local-only` and skip this flow. Run
    `gh api --hostname github.com user --jq .login` with a bounded wait.
    Reuse a working expected account, including one supplied by `GH_TOKEN`,
    and proceed to the reuse checks in step 6 without another login prompt.

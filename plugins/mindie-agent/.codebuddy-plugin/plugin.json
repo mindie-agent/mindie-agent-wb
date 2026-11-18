@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "mindie-agent",
-  "version": "0.1.18",
-  "description": "Ascend NPU & vLLM-Ascend engineering assistant: complete MCP suite for remote NPU development, profiling, roofline simulation, CANN/ACLGraph debugging, NPU fleet monitoring, cluster lease coordination, and L1-L4 graded knowledge flywheel.",
+  "version": "0.1.19",
+  "description": "Ascend NPU & vLLM-Ascend engineering assistant: converged 15-tool WorkBuddy `wb` remote profile, deterministic component tools plus `mindie_doctor` readiness checks, and a default-enabled L1-L4 graded knowledge flywheel.",
   "author": {
     "name": "MindIE Agent Team",
     "url": "https://github.com/mindie-agent/mindie-agent"
@@ -32,8 +32,8 @@
         "name": "MindIE Agent",
         "name_zh": "MindIE 昇腾工程助手",
         "name_en": "MindIE Ascend Agent",
-        "description_zh": "昇腾 NPU 与 vLLM-Ascend 全栈研发连接器与插件：完整暴露远端 NPU 容器开发 (remote-dev 20 项工具)、性能采集剖析 (profiler)、Roofline 与拓扑仿真 (sim)、CANN 故障与 ACLGraph/精度调试 (debugger)、集群算力实时监控 (npu-top)、NPU/端口租约队列协调 (coordinator) 及 L1-L4 分级知识飞轮 (knowledge)。",
-        "description_en": "Full-stack Ascend NPU & vLLM-Ascend engineering plugin and connector: exposes 39 canonical MCP tools (52 with WorkBuddy native remote mirrors) across remote NPU development (remote-dev), profiling (profiler), Roofline/topology simulation (sim), CANN/ACLGraph/precision debugging (debugger), NPU fleet telemetry (npu-top), NPU/port lease coordination (coordinator), and L1-L4 graded knowledge retrieval/distillation (knowledge).",
+        "description_zh": "昇腾 NPU 与 vLLM-Ascend 全栈研发助手：收敛为 15 项 WorkBuddy `wb` 远端工具，提供确定性组件工具与 `mindie_doctor` 就绪检查，以及默认启用的 L1-L4 分级知识飞轮。",
+        "description_en": "Ascend NPU & vLLM-Ascend engineering assistant: converged 15-tool WorkBuddy `wb` remote profile, deterministic component tools plus `mindie_doctor` readiness checks, and a default-enabled L1-L4 graded knowledge flywheel.",
         "examples_zh": [
           "排查 vLLM-Ascend 新模型 0-day Bring-up 精度偏差与 ACLGraph 捕获同步违规",
           "查看昇腾集群各节点空闲 NPU 卡与显存状态，并申请双 Die 同 Package 测试租约",

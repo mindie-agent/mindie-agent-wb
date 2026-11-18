@@ -12,28 +12,17 @@ import time
 import pytest
 
 REAL_HOME = Path.home()
-SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "plugins" / "mindie-agent" / "scripts"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS_DIR = REPO_ROOT / "plugins" / "mindie-agent" / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-CODE_ROOT = Path(__file__).resolve().parents[2]
-for sibling in ("knowledge", "remote-dev", "diagnostics", "coordinator", "profiler", "sim", "debugger", "npu-top"):
-    cand = CODE_ROOT / sibling
+# Local worktree development can use sibling feature branches; CI installs the
+# pinned packages and has no such sibling directories.
+for sibling in ("harness-ux", "knowledge-ux", "remote-dev-ux", "diagnostics-ux"):
+    cand = REPO_ROOT.parent / sibling
     if cand.is_dir() and str(cand) not in sys.path:
         sys.path.insert(0, str(cand))
-
-from wb_native_compat import ensure_wb_native_support
-
-ensure_wb_native_support()
-py_ver = f"python{sys.version_info.major}.{sys.version_info.minor}"
-for sibling_name in ("knowledge", "remote-dev"):
-    sibling_dir = CODE_ROOT / sibling_name / ".venv"
-    for sp in (
-        sibling_dir / "Lib" / "site-packages",
-        *(sorted((sibling_dir / "lib").glob(f"{py_ver}/site-packages")) if (sibling_dir / "lib").is_dir() else ()),
-    ):
-        if sp.is_dir() and str(sp) not in sys.path:
-            sys.path.append(str(sp))
 
 
 def pytest_addoption(parser):

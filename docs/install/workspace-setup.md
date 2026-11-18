@@ -1,86 +1,90 @@
-# Development workspace setup
+# Development workspace and first-run setup
 
-Run this flow during normal installation and first-use setup, immediately after
-presenting the existing [MindIE Agent user notice](user-notice.md). The offer is part of setup even
-when contribution is disabled. Reuse the user's creation, initialization and
-registration decisions; ordinary tasks and updates do not repeat onboarding.
+Run this flow once during normal installation or first-use setup. Reuse the
+user's workspace, sharing, and SSH decisions; ordinary tasks do not repeat it.
 
-1. Recommend [mindie-agent/vllm-ascend-workspace](https://github.com/mindie-agent/vllm-ascend-workspace.git).
-   During Step 5 of installation (or when `setup.py sharing --status` reports
-   `needs_onboarding_prompt: true`), call WorkBuddy's native
-   **`AskUserQuestion`** tool in the user's language (`multiSelect: false`,
-   first option prefixed with `(Recommended)`) to ask the 3 onboarding
-   questions together:
-   - Local Development Workspace `vllm-ascend-workspace` (`header: "开发工作区"` / `"Workspace"`):
-     `(Recommended) 新建并初始化 vllm-ascend-workspace` / `(Recommended) Initialize vllm-ascend-workspace` vs `保持当前目录不变` / `Keep current directory as workspace` vs `复用本机已有工作区目录` / `Use an existing workspace directory`
-   - Community Knowledge Sharing & Automated Fault Reporting (`header: "社区共享"` / `"Sharing"`):
-     `(Recommended) 开启社区共享与故障上报` / `(Recommended) Enable Community Sharing & Fault Reporting` vs `暂不开启，仅本地使用` / `Keep Local-Only Mode`
-   - `顺手给 MindIE Agent 点个 GitHub Star 吗？ ⭐` / `Would you like to give mindie-agent a Star on GitHub ⭐?` (`header: "GitHub Star"`):
-     `(Recommended) 好，点个 Star ⭐` / `(Recommended) Sure, star it ⭐` vs `先不用` / `Maybe later`
-   Obtain the destination when needed and explain that the selected workspace
-   will also be added to the current client's native project/workspace entry.
-   An installation choice includes this registration; do not ask again whether
-   to register it. If the user keeps the current directory without scaffold
-   setup, finish the offer and retain that directory as `WORKSPACE_ROOT`.
-2. Before downloads or fork setup, follow [GitHub Sign-In](github-authentication.md).
-   Reuse authentication already verified during plugin installation. Otherwise
-   offer browser login or token creation/input, preferring tokens on enterprise
-   networks. A GitHub username alone does not establish authentication.
-3. For a new directory, run
-   `git clone https://github.com/mindie-agent/vllm-ascend-workspace.git "<destination>"`.
-   For reuse, inspect the selected checkout first. Preserve existing files and
-   configuration. Report clone failures with the actual path and result; inspect
-   an interrupted clone before retrying it. Keeping the current directory needs
-   no scaffold installation or unrelated configuration changes.
-4. Once the selected workspace exists, register/open its absolute root through
-   the current harness's native project controls. Follow the checkout's
-   `.agents/harness-workspace.md` when available and the native entry below.
-   Reuse an existing record for the same path. Do this even when the user defers
-   source initialization. Confirm the native path before reporting completion;
-   a child-shell `cd` or filesystem access grant is not project registration.
-5. If initialization was not already decided, offer it now for a new or reused
-   scaffold that needs it. On approval, read its `AGENTS.md`, `README.md` and
-   `.agents/scripts/README.md`. Use the checked-out initializer:
-   `uv run --no-project --python 3.13 python .agents/scripts/repo_init.py --no-input` reuses saved `workspace.json`
-   fork selections. For first setup using the verified account's existing forks,
-   use `uv run --no-project --python 3.13 python .agents/scripts/repo_init.py --github-user <account> --no-input`.
-   The initializer configures forks; it does not create GitHub forks. Resolve
-   missing forks within the requested setup and keep existing personal remotes.
-   Do not replace this flow with manual submodule commands or copying the sample
-   configuration over the user's file.
-6. After resolving `WORKSPACE_ROOT`, persist the user's sharing choice via
-   `uv run --no-project --python 3.13 python "<plugin_root>/scripts/setup.py" sharing --enable --project-root "$WORKSPACE_ROOT"`
-   (or `--disable`), and if the user chose to Star `mindie-agent/mindie-agent`, run
-   `gh api --hostname github.com --silent -X PUT /user/starred/mindie-agent/mindie-agent`.
-   Report the path, native registration/open status and initialization status
-   separately. Resume a failed initialization in the same workspace. Contribution
-   settings retain their approved scope; workspace installation does not enable
-   sharing or expand that scope.
+## 1. Install the plugin
 
-## Native entry
+Ask WorkBuddy or a terminal-capable agent to run:
 
-WorkBuddy desktop (`WorkBuddy.app`) and its bundled CodeBuddy Agent CLI
-(`codebuddy`; some hosts also expose `cbc`):
+```bash
+uv run https://github.com/mindie-agent/mindie-agent/releases/latest/download/install.py --host wb
+```
+
+`gh` is optional and never blocks installation. If the agent needs a pinned
+source checkout instead, use
+`python plugins/mindie-agent/scripts/setup.py init --install-wb --workspace-root "$PWD"`.
+Only `install-wb` and `init --install-wb` mount the native plugin and Connector.
+
+## 2. Ask the three onboarding questions
+
+Call WorkBuddy's native `AskUserQuestion` tool (`multiSelect: false`, first
+option prefixed `(Recommended)`, in the user's language). Fall back to a
+numbered single-choice card only when the tool is unavailable.
+
+1. **Workspace** (`header: "开发工作区"` / `"Workspace"`):
+   - `(Recommended)` Create and initialize `vllm-ascend-workspace`
+   - Keep the current directory as `WORKSPACE_ROOT`
+   - Reuse an existing workspace directory
+2. **Community sharing** (`header: "社区共享"` / `"Sharing"`) — dynamic:
+   - Run `gh auth status` (or `gh api --hostname github.com user --jq .login`)
+     once with a bounded wait.
+   - If `gh` is logged in, make `(Recommended) 开启社区共享与故障上报` /
+     `(Recommended) Enable Community Sharing & Fault Reporting` the first option.
+   - Otherwise make `(Recommended) 暂不开启，仅本地使用` /
+     `(Recommended) Keep Local-Only Mode` the first option.
+   - The other option remains selectable; never infer consent from a missing
+     answer, a timeout, or an install failure.
+3. **One-step Ascend NPU connection** (`header: "昇腾 NPU 连接"` /
+   `"Ascend NPU"`):
+   - `(Recommended)` Connect now: collect host, port, user, and optional
+     container, then call `remote_auth` once with
+     `{"host": ..., "port": ..., "user": ..., "save_default": true, "discover": true}`.
+   - In interactive terminal mode, append `--password` at the end so the
+     password is read from a hidden prompt; never place it in chat, logs, or
+     command arguments.
+   - Non-terminal mode uses SSH keys or an existing `remote_auth` default.
+   - `Configure later` records no endpoint and remains valid.
+
+Apply the choices in this order: resolve `WORKSPACE_ROOT`, persist sharing, then
+connect or defer the NPU endpoint.
+
+## 3. Persist the sharing choice
+
+```bash
+python plugins/mindie-agent/scripts/setup.py sharing --enable --project-root "$WORKSPACE_ROOT"
+python plugins/mindie-agent/scripts/setup.py sharing --local-only
+python plugins/mindie-agent/scripts/setup.py sharing --disable
+python plugins/mindie-agent/scripts/setup.py sharing --status
+```
+
+`--enable` selects `contribute` (redacted knowledge PRs plus sanitized fault
+reporting). `--local-only` keeps local transcript capture without reporting.
+`--disable` stops new capture and reporting. `--status` is read-only.
+
+## 4. Verify readiness
+
+```bash
+python plugins/mindie-agent/scripts/setup.py doctor --probe-remote --cwd "$WORKSPACE_ROOT"
+```
+
+Or call the `mindie_doctor` MCP tool with
+`{"probe_remote": true, "cwd": "..."}`. Confirm `mindie_remote-dev` lists 15
+`wb` tools, `mindie-tools` includes `mindie_doctor` with no `knowledge_*`
+duplicates, and `mindie-knowledge` lists exactly 5 tools. Report the workspace
+path, sharing tier, NPU endpoint state, and doctor result separately.
+
+If this project helps, end with one polite line inviting the user to Star ⭐ —
+never star on silence, refusal, or a failed install.
+
+## Native entry points
 
 - **WorkBuddy**: use the in-app control that opens or adds a workspace folder,
-  then verify the selected absolute path is the active workspace.
+  then verify the selected absolute path is active.
 - **`codebuddy` / `cbc`**: start the next interactive session with that
-  directory as its workspace. Read `codebuddy --help` (or `cbc --help`) on the
-  installed binary before choosing a flag. On macOS the bundled binary is often
+  directory as its workspace. On macOS the bundled binary is often
   `/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy`.
 
-Plugin and Connector mounting is a separate step. Only
-`uv run --no-project --python 3.13 python plugins/mindie-agent/scripts/setup.py init --install-wb` and
-`uv run --no-project --python 3.13 python plugins/mindie-agent/scripts/setup.py install-wb` call
-`install_workbuddy_plugin`. Bare `init` writes the MindIE profile (`wb.json`)
-and does not mount either surface. Confirm both mounts with the success
-signals in the [repository README](../../README.md) before reporting installation complete.
-
-Use available native tools or UI automation to complete the action. If the agent
-cannot operate the required folder picker, give the selected path and that one
-remaining action, and report registration as pending. Never edit private harness
-project databases or create a second client profile to simulate registration.
-
-Suggested combined offer (use the user's language):
-
-“是否创建并初始化 vllm-ascend-workspace，同时添加到当前 WorkBuddy 工作区？也可以使用已有目录，或继续当前目录。”
+If the agent cannot operate the folder picker, give the selected path and the
+one remaining action, and report registration as pending. Never edit private
+harness project databases to simulate registration.

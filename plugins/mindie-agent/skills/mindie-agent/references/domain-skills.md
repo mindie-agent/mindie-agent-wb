@@ -1,18 +1,85 @@
 # Domain Tooling & NPU Discipline
 
-## 1. Graded Knowledge Tools (`mindie-knowledge` MCP & `knowledge_cli.py`)
+## 1. `mindie-remote-dev` (15-tool `wb` profile)
 
-- `knowledge_query`: Searches graded `L1–L4` units and task blocks (`token_budget` `1..64000`, default `8000` in reuse/diagnose and `24000` in `mode="explore"`). Returns bounded `cards` and deduplicated `foundation_cards`.
-- `knowledge_explain`: Reads exact `mindie://<domain>/units/<id>@<rev>` references and expands `requires` once (`token_budget` `1..64000`, default `16000` in reuse/diagnose and `24000` in `mode="explore"`).
-- `knowledge_feedback`: Records `discovered`, `loaded`, `applied`, or `evaluated` (`supported` | `refuted` | `inconclusive`) usage events.
-- `knowledge_distill`: Distills verified milestone (`task_state="verified_milestone"`) or completed (`task_state="completed"`) evidence into graded `L1–L4` units. `L4` mutators require a verified leave-one-out ablation receipt.
-- `knowledge_sync`: Synchronizes configured public knowledge feeds.
+WorkBuddy binds `REMOTE_DEV_HARNESS_PROFILE=wb`, so the remote surface is the
+converged native profile rather than the canonical 20-tool catalog:
 
-## 2. Deterministic Component & Fleet Observation Tools (`mindie-tools` MCP)
+- Native mirrors: `remote_Read`, `remote_Write`, `remote_Edit`,
+  `remote_MultiEdit`, `remote_Bash`, `remote_Glob`, `remote_Grep`,
+  `remote_TaskOutput`, `remote_NotebookEdit`, `remote_TaskStop`,
+  `remote_ViewImage`.
+- Remote-only support: `remote_auth`, `remote_probe`, `remote_artifact_pull`,
+  `remote_artifact_push`.
 
-- `profiler` (`mindie-profiler`): `inventory`, `analyze`, `correlate`, `compare`, `sql`, `camodel`, `kernels`.
-- `sim` (`mindie-sim`): Roofline, operator, graph, topology/PD Pareto, and serving performance simulations.
-- `coordinator` (`mindie-coordinator`): Acquire NPU and port leases for coordinator-managed device workloads (`vram_free_mb >= Expected VRAM`; respect Ascend A3 910C dual-Die `Phy-ID 0..15` package boundaries).
-- `debugger` (`mindie-debugger`): `triage`, `decode-code`, `precision` (`inspect-capsule`, `replay-call`, `check-call`, `compare-traces`, `slim-moe`, `watch`), `aclgraph` (`guard`, `inspect`), and `remote-guide`.
-- `npu_top` & Direct Observation Tools (`npu_status`, `server_status`, `list_mounts`, `find_npu_capacity`, `npu_telemetry_window`, `list_npu_servers`): Observation-only fleet telemetry.
-- `diagnostics_status` & `diagnostics_bundle`: Local diagnostic health and sanitized bundle export.
+`remote_TaskOutput` owns background output/job inspection for this profile.
+`remote_BashOutput` and `remote_KillShell` are not part of `wb`; do not assume
+they exist.
+
+Bind once with saved discovery, then reuse the default endpoint:
+
+```json
+{"host": "npu.example", "port": 22, "user": "root", "alias": "a3-lab",
+ "save_default": true, "discover": true}
+```
+
+Call `remote_auth(..., save_default=True, discover=True)` with those
+arguments. Subsequent tools may omit endpoint fields and recover the saved
+default; a `job_*` tool also recovers its endpoint from the stored job record.
+Use `remote_probe` for a cheap reachability check.
+
+## 2. Deterministic Components (`mindie-tools`)
+
+`mindie_status`, `mindie_doctor`, `profiler`, `sim`, `coordinator`, `npu_top`,
+`debugger`, `rsi_loop`, `experiment_ledger`, `diagnostics_status`, and
+`diagnostics_bundle`. This surface contains no `knowledge_*` duplicates.
+
+`mindie_doctor` is the readiness check for the active profile, runtime,
+component bindings, and optional remote reachability:
+
+```json
+{"probe_remote": true, "cwd": "/workspace/vllm-ascend", "timeout_ms": 30000}
+```
+
+Run it once before profiling or multi-rank work. A failed doctor result is
+diagnostic guidance; continue through native tools when the task does not
+depend on the failed check.
+
+## 3. Graded Knowledge (`mindie-knowledge`, 5 default-on tools)
+
+`knowledge_query`, `knowledge_explain`, `knowledge_feedback`,
+`knowledge_distill`, and `knowledge_sync`. They are available at startup with
+zero `_meta`, zero pre-call binding, and zero onboarding command.
+
+- `knowledge_query`: concise technical terms, optional `domain`, observed
+  `conditions`, `token_budget` (1–64000), `mode` (`reuse` / `diagnose` /
+  `explore`).
+- `knowledge_explain`: batch `refs`, observed `conditions`, visible
+  `known_refs`.
+- `knowledge_distill`: only `verified_milestone` or `completed` evidence with
+  `inputs`, `task_state`, and a native lease supplied by the runtime.
+- `knowledge_sync`: configured public feeds only.
+
+## 4. Sharing & Fault Reporting
+
+Run `setup.py sharing --enable | --local-only | --disable` (and read-only
+`--status`) from the plugin root:
+
+```bash
+python scripts/setup.py sharing --enable
+python scripts/setup.py sharing --local-only
+python scripts/setup.py sharing --disable
+python scripts/setup.py sharing --status
+```
+
+`--enable` (`contribute`) authorizes redacted knowledge PRs plus sanitized
+fault reporting. `--local-only` captures local transcripts without reporting.
+`--disable` stops new capture and reporting. `--status` is strictly read-only.
+
+## 5. NPU Lease Discipline
+
+Acquire or verify a `coordinator` lease before physical-NPU workloads, respect
+A3 dual-Die package boundaries, and inspect live `execution_id` / `job_id`
+handles before resubmitting. Pass explicit `--time-window`,
+`--step-window` / `--full-range`, and `--clock-domain` to `profiler`; use
+`mode="explore"` plus leave-one-out ablations when repeated `L3` attempts stall.

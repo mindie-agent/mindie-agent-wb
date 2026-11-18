@@ -47,8 +47,8 @@ jobs:
           assert dot_mcp["mcpServers"]["mindie-knowledge"]["alwaysLoad"] is True
           assert dot_mcp["mcpServers"]["mindie-knowledge"]["defer_loading"] is False
           sys.path.insert(0, str(plugin_dir / "scripts"))
-          import host_adapter
-          lock = host_adapter.verify_seed_bundle(plugin_dir)
+          import mindie_launch
+          lock = mindie_launch.verify_seed_bundle(plugin_dir)
           assert lock["schema"] == "mindie-harness-seed/1"
           proc = subprocess.run(
               [sys.executable, "-I", str(plugin_dir / "scripts" / "mindie_launch.py"), "hook", "stop"],
