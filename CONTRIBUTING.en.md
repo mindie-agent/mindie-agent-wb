@@ -19,8 +19,8 @@ code/
 ## 2. Non-Negotiable Host-Plugin Contracts
 
 1. **Connector + Native CLI Dual Surfaces**: Preserve both `plugin.json` + `mcp.json` (WorkBuddy Connector) and `.codebuddy-plugin` + `.mcp.json` + `hooks/hooks.json` (CodeBuddy CLI plugin), including the `wb` remote-dev profile.
-2. **Passive Default & Deferred Knowledge Surface (`P2.1` / `P2.2` / `AD-11`)**: Keep `mindie-knowledge` at `alwaysLoad: false, defer_loading: true` in `.mcp.json`, expose only `mindie_entry` on unactivated `knowledge` `tools/list`, and return `{"suppressOutput": true}` in `< 100ms` on unactivated `Stop`.
-3. **Zero Pre-Call Binding & Shared Remote State (`P2.7` / `AD-02`)**: `mindie-remote-dev` and `mindie-tools` must work without `_meta` or `PreToolUse` binds, and `REMOTE_DEV_STATE_DIR` must remain shared at `state_dir()/remote` across parent sessions and subagents.
+2. **Silent Default-On Knowledge & Consent-Gated `Stop` (`P2.7` / `P2.8`)**: Keep all three servers at `alwaysLoad: true, defer_loading: false` in `.mcp.json` exposing the 5 `knowledge_*` tools on startup, and check community sharing consent + `project_roots` before opening `admission.sqlite3` so passive `Stop` returns `{"suppressOutput": true}` in `< 100ms`.
+3. **Zero Pre-Call Binding & Shared Remote State (`P2.7` / `AD-02`)**: `mindie-remote-dev`, `mindie-tools`, and `mindie-knowledge` must work without `_meta` or `PreToolUse` binds, and `REMOTE_DEV_STATE_DIR` must remain shared at `state_dir()/remote` across parent sessions and subagents.
 4. **Windows Zero-Popup & Unix LF**: Every Windows subprocess call must include `CREATE_NO_WINDOW`, and all tracked text files must use Unix `LF` (`\n`).
 
 ## 3. Test Isolation & Pre-PR Gate

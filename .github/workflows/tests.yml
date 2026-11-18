@@ -44,8 +44,8 @@ jobs:
           from pathlib import Path
           plugin_dir = Path(sys.argv[1])
           dot_mcp = json.loads((plugin_dir / ".mcp.json").read_text(encoding="utf-8"))
-          assert dot_mcp["mcpServers"]["mindie-knowledge"]["alwaysLoad"] is False
-          assert dot_mcp["mcpServers"]["mindie-knowledge"]["defer_loading"] is True
+          assert dot_mcp["mcpServers"]["mindie-knowledge"]["alwaysLoad"] is True
+          assert dot_mcp["mcpServers"]["mindie-knowledge"]["defer_loading"] is False
           sys.path.insert(0, str(plugin_dir / "scripts"))
           import host_adapter
           lock = host_adapter.verify_seed_bundle(plugin_dir)

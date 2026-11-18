@@ -39,18 +39,18 @@ def test_live_mindie_launch_hooks_and_all_three_mcp_stdio_servers(tmp_path: Path
     ws = tmp_path / "ws"
     ws.mkdir()
 
-    # 1. UserPromptSubmit hook with `/mindie-agent`
+    # 1. UserPromptSubmit hook pass-through
     hook_in = json.dumps(
         {
             "session_id": LIVE_SESSION,
             "cwd": str(ws),
-            "prompt": "/mindie-agent Verify live WorkBuddy MCP and knowledge loop",
+            "prompt": "Verify live WorkBuddy MCP and knowledge loop",
         }
     )
     hook_proc = _run_launch(["hook", "user-prompt-submit"], hook_in)
     assert hook_proc.returncode == 0, hook_proc.stderr
     hook_out = json.loads(hook_proc.stdout)
-    assert LIVE_SESSION in hook_out["hookSpecificOutput"]["additionalContext"]
+    assert hook_out == {"suppressOutput": True}
 
     # 2. Live stdio `mcp remote` (`initialize` + `tools/list`)
     remote_reqs = (
@@ -166,18 +166,6 @@ def test_live_mindie_launch_hooks_and_all_three_mcp_stdio_servers(tmp_path: Path
                     "id": 2,
                     "method": "tools/call",
                     "params": {
-                        "name": "mindie_entry",
-                        "arguments": {"op": "status"},
-                        "_meta": {"workbuddy.ai/conversationId": LIVE_SESSION},
-                    },
-                }
-            ),
-            json.dumps(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 3,
-                    "method": "tools/call",
-                    "params": {
                         "name": "knowledge_sync",
                         "arguments": {},
                         "_meta": {"workbuddy.ai/conversationId": LIVE_SESSION},
@@ -187,7 +175,7 @@ def test_live_mindie_launch_hooks_and_all_three_mcp_stdio_servers(tmp_path: Path
             json.dumps(
                 {
                     "jsonrpc": "2.0",
-                    "id": 4,
+                    "id": 3,
                     "method": "tools/call",
                     "params": {
                         "name": "knowledge_query",
@@ -201,11 +189,9 @@ def test_live_mindie_launch_hooks_and_all_three_mcp_stdio_servers(tmp_path: Path
     know_proc = _run_launch(["mcp", "knowledge"], know_reqs, timeout=60.0)
     assert know_proc.returncode == 0, know_proc.stderr
     know_lines = [json.loads(line) for line in know_proc.stdout.strip().splitlines()]
-    assert len(know_lines[0]["result"]["tools"]) == 6
-    assert know_lines[1]["result"]["isError"] is False
-    assert know_lines[1]["result"]["structuredContent"]["activated"] is True
-    assert know_lines[2]["result"]["isError"] is False, f"knowledge_sync failed: {know_lines[2]}"
-    assert know_lines[3]["result"]["isError"] is False, f"knowledge_query failed: {know_lines[3]}"
+    assert len(know_lines[0]["result"]["tools"]) == 5
+    assert know_lines[1]["result"]["isError"] is False, f"knowledge_sync failed: {know_lines[1]}"
+    assert know_lines[2]["result"]["isError"] is False, f"knowledge_query failed: {know_lines[2]}"
 
 
 def test_live_component_update_check_verifies_up_to_date(tmp_path: Path):

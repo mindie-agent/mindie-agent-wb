@@ -1,4 +1,4 @@
-"""Tier 0 & Tier 1 tests for WorkBuddy hook lifecycle, `/mindie-agent` session gate, and MCP bind security."""
+"""Tier 0 & Tier 1 tests for WorkBuddy hook pass-throughs, consent-first `Stop` capture, and MCP bind security."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import pytest
 import admission
 import bridge
 import identity
+import paths
 import setup
 
 
@@ -26,7 +27,8 @@ def test_passive_session_start_and_ordinary_prompt_stay_quiet(tmp_path: Path):
         }
     )
     assert start_out == {"suppressOutput": True}
-    assert admission.knowledge_lease(SESSION_A) is None
+    assert not paths.admission_path().exists()
+    assert not paths.bind_db_path().exists()
 
     prompt_out = bridge.handle_user_prompt_submit(
         {
@@ -36,10 +38,11 @@ def test_passive_session_start_and_ordinary_prompt_stay_quiet(tmp_path: Path):
         }
     )
     assert prompt_out == {"suppressOutput": True}
-    assert admission.knowledge_lease(SESSION_A) is None
+    assert not paths.admission_path().exists()
+    assert not paths.bind_db_path().exists()
 
 
-def test_explicit_mindie_agent_gesture_activates_and_deactivates_lease(tmp_path: Path):
+def test_user_prompt_submit_passthrough_creates_zero_sqlite_state(tmp_path: Path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
 
@@ -47,46 +50,29 @@ def test_explicit_mindie_agent_gesture_activates_and_deactivates_lease(tmp_path:
         {
             "session_id": SESSION_A,
             "cwd": str(workspace),
-            "prompt": "/mindie-agent 排查 A3 双 Die HCCL 通信超时",
+            "prompt": "排查 A3 双 Die HCCL 通信超时",
         }
     )
-    assert "hookSpecificOutput" in out
-    assert out["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
-    assert SESSION_A in out["hookSpecificOutput"]["additionalContext"]
+    assert out == {"suppressOutput": True}
+    assert not paths.admission_path().exists()
+    assert not paths.bind_db_path().exists()
 
-    lease = admission.knowledge_lease(SESSION_A)
-    assert lease is not None
+    # Default-enabled knowledge provisions a lease on demand with not_before=0.0
+    lease = admission.ensure_default_lease(SESSION_A, workspace, not_before=0.0)
     assert lease["enabled"] == 1
     assert lease["entry_enabled"] == 1
+    assert lease["activated_at"] == 0.0
     assert Path(lease["project_root"]) == workspace.resolve()
-
-    # Another session never inherits SESSION_A's lease
     assert admission.knowledge_lease(SESSION_B) is None
 
-    # Subsequent ordinary prompt in SESSION_A keeps the lease active
-    follow_up = bridge.handle_user_prompt_submit(
-        {
-            "session_id": SESSION_A,
-            "cwd": str(workspace),
-            "prompt": "Show the HCCL ranktable",
-        }
-    )
-    assert follow_up == {"suppressOutput": True}
-    assert admission.knowledge_lease(SESSION_A) is not None
-
-    # Explicit deactivation revokes the lease
-    deact = bridge.handle_user_prompt_submit(
-        {
-            "session_id": SESSION_A,
-            "cwd": str(workspace),
-            "prompt": "/mindie-agent deactivate",
-        }
-    )
-    assert "deactivated" in deact["hookSpecificOutput"]["additionalContext"]
+    # Programmatic deactivation mutes the session cleanly
+    deact = admission.deactivate(SESSION_A)
+    assert deact["status"] == "inactive"
+    assert admission.is_deactivated(SESSION_A) is True
     assert admission.knowledge_lease(SESSION_A) is None
 
 
-def test_pre_tool_use_binds_mcp_call_and_rejects_replay(tmp_path: Path):
+def test_pre_tool_use_passthrough_and_identity_bind_security(tmp_path: Path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
     args = {"file_path": "/workspace/vllm_ascend/worker.py"}
@@ -101,7 +87,21 @@ def test_pre_tool_use_binds_mcp_call_and_rejects_replay(tmp_path: Path):
         }
     )
     assert hook_res["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert not paths.bind_db_path().exists()
 
+    # Forged session identity in tool arguments is rejected in PreToolUse too
+    with pytest.raises(ValueError, match="must not declare session identity"):
+        bridge.handle_pre_tool_use(
+            {
+                "session_id": SESSION_A,
+                "cwd": str(workspace),
+                "tool_name": "mcp__plugin_mindie-agent_mindie-tools__mindie_status",
+                "tool_input": {"session_id": SESSION_A},
+            }
+        )
+
+    # Explicit one-shot bind consumption and replay rejection remain intact
+    identity.publish_bind(SESSION_A, "remote", "remote_read", args, tool_use_id="call-001")
     claimed = identity.claim_bind("remote", "remote_read", args)
     assert claimed["session"] == SESSION_A
     assert claimed["tool_use_id"] == "call-001"
@@ -110,7 +110,7 @@ def test_pre_tool_use_binds_mcp_call_and_rejects_replay(tmp_path: Path):
     with pytest.raises(ValueError, match="no active PreToolUse bind"):
         identity.claim_bind("remote", "remote_read", args)
 
-    # Also verify WorkBuddy `_meta["workbuddy.ai/conversationId"]` transport fallback
+    # WorkBuddy `_meta["workbuddy.ai/conversationId"]` transport resolution
     meta_claim = identity.claim_bind(
         "tools",
         "mindie_status",
@@ -119,20 +119,18 @@ def test_pre_tool_use_binds_mcp_call_and_rejects_replay(tmp_path: Path):
     )
     assert meta_claim["session"] == SESSION_B
 
-    # And reject forged identity fields inside tool arguments
+    # Reject forged identity fields inside tool arguments
     with pytest.raises(ValueError, match="must not declare session identity"):
         identity.claim_bind("tools", "mindie_status", {"session_id": SESSION_A})
 
-    # Cross-conversation bind isolation: SESSION_A must never claim SESSION_B's identical bind
+    # Cross-conversation bind isolation
     shared_args = {"argv": ["leases"]}
     identity.publish_bind(SESSION_A, "tools", "coordinator", shared_args)
     identity.publish_bind(SESSION_B, "tools", "coordinator", shared_args)
 
-    # Without _meta, two concurrent identical binds across different conversations are rejected as ambiguous
     with pytest.raises(ValueError, match="ambiguous PreToolUse binds"):
         identity.claim_bind("tools", "coordinator", shared_args)
 
-    # With _meta specifying SESSION_A, only SESSION_A's bind is claimed
     claim_a = identity.claim_bind(
         "tools",
         "coordinator",
@@ -141,7 +139,6 @@ def test_pre_tool_use_binds_mcp_call_and_rejects_replay(tmp_path: Path):
     )
     assert claim_a["session"] == SESSION_A
 
-    # And SESSION_B's bind remains available for SESSION_B
     claim_b = identity.claim_bind(
         "tools",
         "coordinator",
@@ -151,9 +148,11 @@ def test_pre_tool_use_binds_mcp_call_and_rejects_replay(tmp_path: Path):
     assert claim_b["session"] == SESSION_B
 
 
-def test_stop_never_forces_continuation_and_requires_manual_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_stop_checks_consent_and_scope_before_auto_provisioning_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     workspace = tmp_path / "ws"
     workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
     projects_dir = tmp_path / "workbuddy" / "projects" / "ws"
     projects_dir.mkdir(parents=True)
     transcript = projects_dir / f"{SESSION_A}.jsonl"
@@ -165,7 +164,7 @@ def test_stop_never_forces_continuation_and_requires_manual_lease(tmp_path: Path
                 "timestamp": 1761899000000,
                 "message": {
                     "role": "user",
-                    "content": [{"type": "text", "text": "/mindie-agent test"}],
+                    "content": [{"type": "text", "text": "Investigate HCCL timeout"}],
                 },
             }
         )
@@ -173,7 +172,7 @@ def test_stop_never_forces_continuation_and_requires_manual_lease(tmp_path: Path
         encoding="utf-8",
     )
 
-    # Unactivated Stop returns quiet suppressOutput and never forces continuation
+    # 1. Unconfigured Stop returns suppressOutput and never creates admission.sqlite3
     passive_stop = bridge.handle_stop(
         {
             "session_id": SESSION_A,
@@ -183,17 +182,21 @@ def test_stop_never_forces_continuation_and_requires_manual_lease(tmp_path: Path
     )
     assert passive_stop == {"suppressOutput": True}
     assert passive_stop.get("decision") != "block"
+    assert not paths.admission_path().exists()
 
-    # Activate session and enable community sharing for workspace
-    bridge.handle_user_prompt_submit(
+    # 2. Enable community sharing ONLY for `workspace`; out-of-scope `outside` still creates zero SQLite
+    setup.configure_community(enabled=True, fork="user/knowledge-vllm-ascend", project_root=workspace)
+    out_of_scope_stop = bridge.handle_stop(
         {
             "session_id": SESSION_A,
-            "cwd": str(workspace),
-            "prompt": "/mindie-agent test",
+            "cwd": str(outside),
+            "transcript_path": str(transcript),
         }
     )
-    setup.configure_community(enabled=True, fork="user/knowledge-vllm-ascend", project_root=workspace)
+    assert out_of_scope_stop == {"suppressOutput": True}
+    assert not paths.admission_path().exists()
 
+    # 3. In-scope Stop auto-provisions default lease (not_before=0.0) and captures without prior activation
     captured_calls = []
 
     def fake_capture_hook(engine_cfg, payload):
@@ -213,6 +216,9 @@ def test_stop_never_forces_continuation_and_requires_manual_lease(tmp_path: Path
     )
     assert active_stop == {"suppressOutput": True}
     assert active_stop.get("decision") != "block"
+    assert paths.admission_path().is_file()
+    lease = admission.knowledge_lease(SESSION_A)
+    assert lease is not None and lease["activated_at"] == 0.0
     assert len(captured_calls) == 1
     _, forwarded = captured_calls[0]
     assert forwarded["harness"] == "wb"

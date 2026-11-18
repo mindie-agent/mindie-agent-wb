@@ -138,7 +138,7 @@ def test_which_native_filters_wsl_mnt_c_shims_and_windowsapps_stubs(
     assert npu_help.stdout.strip()
 
 
-def test_powershell_activation_hint_and_knowledge_cli_utf8_bom_input_file(
+def test_user_prompt_passthrough_and_knowledge_cli_utf8_bom_input_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     ws = tmp_path / "中文工作区"
@@ -147,14 +147,10 @@ def test_powershell_activation_hint_and_knowledge_cli_utf8_bom_input_file(
         {
             "session_id": SESSION_ID,
             "cwd": str(ws),
-            "prompt": "/mindie-agent 排查昇腾 A3 双 Die HCCL",
+            "prompt": "排查昇腾 A3 双 Die HCCL",
         }
     )
-    ctx = out["hookSpecificOutput"]["additionalContext"]
-    assert "& \"" in ctx
-    assert "-I -X utf8" in ctx
-    assert f'--session "{SESSION_ID}"' in ctx
-    assert "--input-file <json_file>" in ctx
+    assert out == {"suppressOutput": True}
 
     # Simulate PowerShell 5.1 Set-Content -Encoding UTF8 (with UTF-8 BOM \xef\xbb\xbf)
     bom_file = tmp_path / "query_args.json"
@@ -164,14 +160,14 @@ def test_powershell_activation_hint_and_knowledge_cli_utf8_bom_input_file(
     monkeypatch.setattr(
         knowledge_cli,
         "execute_knowledge_tool",
-        lambda tool, args, *, session: seen.update(tool=tool, args=args, session=session) or {"hits": []},
+        lambda tool, args, *, session=None, config=None: seen.update(tool=tool, args=args, session=session) or {"hits": []},
     )
-    rc = knowledge_cli.main(["knowledge_query", "--session", SESSION_ID, "--input-file", str(bom_file)])
+    rc = knowledge_cli.main(["knowledge_query", "--input-file", str(bom_file)])
     assert rc == 0
     envelope = json.loads(capsys.readouterr().out)
     assert envelope["isError"] is False
     assert seen["tool"] == "knowledge_query"
-    assert seen["session"] == SESSION_ID
+    assert seen["session"] == "wb-cli-default"
     assert seen["args"] == {"query": "昇腾 A3 双 Die 拓扑", "limit": 2}
 
 

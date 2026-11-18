@@ -11,8 +11,8 @@ Implements `WBHostAdapter` conforming to `mindie_harness.api.HostAdapter` (`host
 - Pure Python stdlib at module import time (`< 15ms`, zero device context, zero network).
 - `extract_session_identity` reads verified WorkBuddy metadata (`workbuddy.ai/conversationId`)
   or host environment variables only—never model-supplied tool `arguments` (`P2.7`).
-- Before `/mindie-agent` activation, `mcp_tools("knowledge", ...)` exposes only `mindie_entry`
-  and zero `knowledge_*` schemas (`P2.1` / `AD-11`).
+- `mcp_tools("knowledge", ...)` exposes all 5 default-enabled `knowledge_*` schemas directly
+  on startup without touching `admission.sqlite3`.
 
 [Timeouts & Locks]
 - Seed verification streams `64 KiB` chunks in `< 5ms`; resident stdio serving uses separate
@@ -53,6 +53,7 @@ _FAST_REMOTE_SUFFIXES = (
 _FAST_TOOLS = frozenset({
     "mindie_status", "diagnostics_status", "npu_top", "npu_status", "server_status",
     "list_mounts", "find_npu_capacity", "npu_telemetry_window", "list_npu_servers",
+    "knowledge_query", "knowledge_explain",
 })
 _REMOTE_SESSION_VAR: ContextVar[str | None] = ContextVar("mindie_wb_remote_session", default=None)
 _REMOTE_STATE_DIR_VAR: ContextVar[Path | None] = ContextVar("mindie_wb_remote_state_dir", default=None)
@@ -205,7 +206,7 @@ def is_fast_lane_tool(surface: str, name: str, arguments: Mapping[str, Any]) -> 
     if surface == "tools":
         return name in _FAST_TOOLS
     if surface == "knowledge":
-        return name == "mindie_entry" or name in {"knowledge_query", "knowledge_explain"}
+        return name in {"mindie_entry", "knowledge_query", "knowledge_explain"}
     lowered = name.lower()
     if lowered == "remote_auth":
         return arguments.get("action") == "status"
@@ -465,20 +466,17 @@ class WBHostAdapter:
         return None
 
     def mcp_tools(self, surface: str, profile) -> list[dict[str, Any]]:
-        import admission
         import mcp_server
 
-        cfg = profile.config_path if profile is not None else config_path(self._config)
+        _ = profile
         if surface == "remote":
             return mcp_server.remote_tools()
         if surface in {"tools", "components"}:
             return mcp_server.component_tools()
         if surface == "knowledge":
-            return mcp_server.knowledge_tools(
-                include_private=admission.has_any_active_knowledge_lease(cfg)
-            )
+            return mcp_server.knowledge_tools()
         if surface == "all":
-            return mcp_server.remote_tools() + mcp_server.component_tools()
+            return mcp_server.remote_tools() + mcp_server.component_tools() + mcp_server.knowledge_tools()
         raise ValueError(f"Unsupported WorkBuddy MCP surface: {surface!r}")
 
     def dispatch_tool(self, ctx, arguments: dict[str, Any], profile) -> dict[str, Any]:
@@ -490,7 +488,9 @@ class WBHostAdapter:
                 ctx.tool_name, arguments, rpc_id=ctx.request_id, config=cfg, cancel=ctx.cancel
             )
         if ctx.surface == "knowledge":
-            return mcp_server.call_knowledge_surface(ctx.tool_name, arguments, config=cfg)
+            return mcp_server.call_knowledge_surface(
+                ctx.tool_name, arguments, rpc_id=ctx.request_id, config=cfg
+            )
         return mcp_server.call_tools_surface(
             ctx.tool_name, arguments, rpc_id=ctx.request_id, config=cfg, cancel=ctx.cancel
         )
