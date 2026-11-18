@@ -250,6 +250,21 @@ def configure_community_impl(
     if enabled:
         updated = settings_mod.write(comm_file, **write_kwargs)
         consent_store.record_choice(cfile, "contribute")
+        from paths import engine_config_path as _eng_cfg_path
+
+        eng_file = _eng_cfg_path(cfg_file)
+        if eng_file.is_file():
+            try:
+                eng_doc = read_json(eng_file)
+                if isinstance(eng_doc.get("root"), str) and isinstance(eng_doc.get("domain"), str):
+                    from mindie_knowledge.loop.handoff import _store_path, prepare_schema
+
+                    if not _store_path(eng_doc).is_file():
+                        prepare_schema(str(eng_file))
+            except TimeoutError:
+                raise
+            except Exception as exc:
+                print(f"MindIE WorkBuddy store schema prepare warning: {type(exc).__name__}: {exc}", file=sys.stderr)
     else:
         consent_store.record_choice(cfile, "disabled")
         updated = settings_mod.write(comm_file, **write_kwargs)

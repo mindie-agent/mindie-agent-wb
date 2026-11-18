@@ -50,19 +50,15 @@ def test_plugin_manifests_and_connector_mcp_layout():
     assert hooks_file.is_file()
     hooks_cfg = json.loads(hooks_file.read_text(encoding="utf-8"))
     events = hooks_cfg["hooks"]
-    assert set(events) == {"SessionStart", "UserPromptExpansion", "UserPromptSubmit", "PreToolUse", "Stop"}
+    assert set(events) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "Stop"}
 
     # 5. Dual MCP configs (`.mcp.json` for Agent CLI + `mcp.json` for Agent Plugins 1.0.0 Connector)
     dot_mcp = json.loads((PLUGIN_ROOT / ".mcp.json").read_text(encoding="utf-8"))
     assert set(dot_mcp["mcpServers"]) == {"mindie-remote-dev", "mindie-tools", "mindie-knowledge"}
-    for srv_name, srv in dot_mcp["mcpServers"].items():
+    for srv in dot_mcp["mcpServers"].values():
         assert srv["type"] == "stdio"
-        if srv_name == "mindie-knowledge":
-            assert srv["alwaysLoad"] is False
-            assert srv["defer_loading"] is True
-        else:
-            assert srv["alwaysLoad"] is True
-            assert srv["defer_loading"] is False
+        assert srv["alwaysLoad"] is True
+        assert srv["defer_loading"] is False
 
     connector_mcp = json.loads((PLUGIN_ROOT / "mcp.json").read_text(encoding="utf-8"))
     assert connector_mcp["$schema"] == "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
@@ -97,6 +93,12 @@ def test_product_and_harness_compatibility_contracts_and_module_invariants(monke
         "npu-top",
     }
     assert (PLUGIN_ROOT / "skills" / "mindie-agent" / "SKILL.md").is_file()
+    import yaml
+
+    wb_skill_fm = yaml.safe_load((PLUGIN_ROOT / "skills" / "mindie-agent" / "SKILL.md").read_text(encoding="utf-8").split("---", 2)[1])
+    assert isinstance(wb_skill_fm, dict) and wb_skill_fm.get("name") == "mindie-agent"
+    assert wb_skill_fm.get("user-invocable") is False
+    assert "disable-model-invocation" not in wb_skill_fm and "disableModelInvocation" not in wb_skill_fm
     assert (SCRIPTS_DIR / "organizer.py").is_file()
 
     compat = json.loads((REPO_ROOT / "harness-compatibility.json").read_text(encoding="utf-8"))
@@ -456,9 +458,12 @@ def test_onboarding_references_target_workbuddy():
     for moved_name in ("workspace-setup.md", "user-notice.md", "github-authentication.md"):
         assert not (refs / moved_name).exists()
     skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
-    assert "\ndisable-model-invocation: true\n" in skill_text.split("---", 2)[1]
+    assert "disable-model-invocation" not in skill_text.split("---", 2)[1]
+    assert len(skill_text.splitlines()) <= 30
+    cmd_re = __import__("re").compile(r"(?<![A-Za-z0-9_./}-])(?:/|\$)mindie-agent(?![-/A-Za-z0-9_])")
     for runtime_doc in (skill_dir / "SKILL.md", *sorted(refs.glob("*.md"))):
         body = runtime_doc.read_text(encoding="utf-8")
+        assert cmd_re.search(body) is None, f"user command leaked into {runtime_doc}"
         for forbidden_install_term in (
             "workspace-setup.md",
             "github-authentication.md",
@@ -471,6 +476,17 @@ def test_onboarding_references_target_workbuddy():
             "First-Use Onboarding",
         ):
             assert forbidden_install_term not in body, f"{forbidden_install_term!r} leaked into {runtime_doc}"
+    for user_doc in (
+        REPO_ROOT / "README.md",
+        REPO_ROOT / "README.en.md",
+        REPO_ROOT / ".codebuddy-plugin" / "marketplace.json",
+        PLUGIN_ROOT / "plugin.json",
+        PLUGIN_ROOT / ".codebuddy-plugin" / "plugin.json",
+        PLUGIN_ROOT / ".workbuddy-plugin" / "plugin.json",
+        PLUGIN_ROOT / ".claude-plugin" / "plugin.json",
+        *sorted(install_docs.glob("*.md")),
+    ):
+        assert cmd_re.search(user_doc.read_text(encoding="utf-8")) is None, f"user command leaked into {user_doc}"
     for text in (readme, english):
         assert "init --install-wb" in text
         assert "AskUserQuestion" in text

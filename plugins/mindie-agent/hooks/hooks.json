@@ -1,5 +1,5 @@
 {
-  "description": "MindIE Agent lifecycle hooks for Tencent WorkBuddy (SessionStart, UserPromptExpansion, UserPromptSubmit, PreToolUse, Stop)",
+  "description": "MindIE Agent lifecycle hooks for Tencent WorkBuddy (SessionStart, UserPromptSubmit, PreToolUse, Stop)",
   "hooks": {
     "SessionStart": [
       {
@@ -7,18 +7,6 @@
           {
             "type": "command",
             "command": "python -I -X utf8 \"${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py\" hook session-start",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
-    "UserPromptExpansion": [
-      {
-        "matcher": "^mindie-agent(:mindie-agent)?$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python -I -X utf8 \"${CODEBUDDY_PLUGIN_ROOT}/scripts/mindie_launch.py\" hook user-prompt-expansion",
             "timeout": 15
           }
         ]

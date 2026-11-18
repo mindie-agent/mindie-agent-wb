@@ -1,23 +1,24 @@
-"""CLI entrypoint (`knowledge_cli.py`) for MindIE knowledge operations in WorkBuddy.
+"""CLI entrypoint (`knowledge_cli.py`) for default-enabled MindIE knowledge in WorkBuddy.
 
 [Role]
-Executes session-gated knowledge operations (`knowledge_query`, `knowledge_explain`,
+Executes default-enabled knowledge operations (`knowledge_query`, `knowledge_explain`,
 `knowledge_feedback`, `knowledge_distill`, `knowledge_sync`) plus `describe` and
-`mindie_status` for an explicitly activated WorkBuddy conversation (`WB_CONVERSATION_ID`).
+`mindie_status` for Tencent WorkBuddy conversations and CLI callers.
 
 [Invariants]
-- Every `knowledge_*` call requires a valid `WB_CONVERSATION_ID` (from `--session`
-  or `WB_CONVERSATION_ID` env var) with an active `Admission.knowledge_lease(session)`.
+- Knowledge operations are available by default without prior session activation:
+  missing host session metadata falls back to `"wb-cli-default"` and provisions a
+  default lease (`not_before=0.0`) on demand unless muted via `deactivate`.
 - Rejects any caller attempt to pass `_session_id`, `_session_verified`,
   `_activation`, or `mindie_activation` inside the JSON arguments payload.
 
 [Timeouts & Locks]
-- `KNOWLEDGE_RPC_TIMEOUT = 30.0s` for query/explain/feedback; `distill_rpc_timeout()`
-  for C6 distillation.
+- `KNOWLEDGE_RPC_TIMEOUT = 30.0s` for query/explain/feedback/sync;
+  `distill_rpc_timeout()` for C6 distillation; `1 MiB` input byte cap.
 
 [Side-Effect Policy]
-- Reads/updates the local `mindie_knowledge` loop service for the active domain;
-  never activates a session lease implicitly.
+- `describe` and `mindie_status` are strictly read-only; `knowledge_*` calls
+  provision a default profile/lease on demand and connect to `mindie_knowledge`.
 """
 
 from __future__ import annotations
@@ -27,22 +28,25 @@ import json
 import os
 from pathlib import Path
 import sys
-from urllib.error import URLError
 
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from admission import knowledge_lease, status_facts
+from admission import ensure_default_lease, gate, is_deactivated, knowledge_lease, status_facts
 from identity import require_session
-from paths import config_path, engine_config_path, read_json
+from paths import admission_path, config_path, engine_config_path, read_json
 
 KNOWLEDGE_RPC_TIMEOUT = 30.0
+KNOWLEDGE_SYNC_TIMEOUT = 315.0
 MAX_INPUT_BYTES = 1024 * 1024
 
 
 class KnowledgeInactive(ValueError):
-    """Raised when a knowledge operation is invoked in a session without an active lease."""
+    """Raised when a knowledge operation is invoked in an explicitly deactivated session."""
+
+    code = "knowledge_inactive"
+
 
 FORBIDDEN_IDENTITY_KEYS = frozenset(
     {
@@ -204,24 +208,32 @@ PRIVATE_KNOWLEDGE_CATALOG = [
     ),
 ]
 
-
-def _resolve_session(explicit: str | None) -> str:
-    raw = (
-        explicit
-        or os.environ.get("WB_CONVERSATION_ID")
-        or os.environ.get("CODEBUDDY_SESSION_ID")
-        or os.environ.get("AGY_CONVERSATION_ID")
-    )
-    return require_session(raw)
+KNOWLEDGE_NAMES = frozenset(item["name"] for item in PRIVATE_KNOWLEDGE_CATALOG)
 
 
-def _select_engine_config(domain: str | None = None, ref: str | None = None) -> tuple[str, dict, bool]:
-    cfg_file = config_path()
+def _resolve_session(explicit: str | None = None) -> str:
+    if explicit is not None:
+        return require_session(explicit)
+    for env_key in ("WB_CONVERSATION_ID", "WORKBUDDY_SESSION_ID", "CODEBUDDY_SESSION_ID", "AGY_CONVERSATION_ID"):
+        raw = os.environ.get(env_key)
+        if isinstance(raw, str) and raw.strip():
+            return require_session(raw)
+    return "wb-cli-default"
+
+
+def _select_engine_config(
+    domain: str | None = None,
+    ref: str | None = None,
+    *,
+    config: str | Path | None = None,
+    workspace_root: str | Path | None = None,
+) -> tuple[str, dict, bool]:
+    cfg_file = config_path(config)
     default_eng = str(engine_config_path(cfg_file))
     if not Path(default_eng).is_file():
         from setup import ensure_default_profile
 
-        ensure_default_profile(config=cfg_file)
+        ensure_default_profile(config=cfg_file, workspace_root=None)
     adapter = read_json(cfg_file) if cfg_file.is_file() else {}
     domain_cfgs = adapter.get("domain_configs") if isinstance(adapter.get("domain_configs"), dict) else {}
     if domain is None and ref is None:
@@ -238,35 +250,59 @@ def _ensure_loop_connection(engine_path: str) -> dict:
     return ensure_service(engine_path)
 
 
-def execute_knowledge_tool(tool_name: str, args: dict, *, session: str) -> dict:
+def execute_knowledge_tool(
+    tool_name: str,
+    args: dict,
+    *,
+    session: str | None = None,
+    project_root: str | Path | None = None,
+    config: str | Path | None = None,
+) -> dict:
     if not isinstance(args, dict):
         raise ValueError("tool arguments must be a JSON object")
     if FORBIDDEN_IDENTITY_KEYS & set(args):
         raise ValueError("tool arguments must not include native session identity keys")
+    if tool_name not in KNOWLEDGE_NAMES:
+        raise ValueError(f"unknown knowledge tool: {tool_name}")
 
-    session = require_session(session)
+    resolved_session = _resolve_session(session)
+    if is_deactivated(resolved_session, config=config):
+        raise KnowledgeInactive(f"session {resolved_session} is deactivated for MindIE knowledge")
+
     body = dict(args)
     requested_domain = body.pop("domain", None) if tool_name in {"knowledge_query", "knowledge_distill", "knowledge_sync"} else None
     ref_for_route = None
     if tool_name == "knowledge_explain":
         refs = body.get("refs")
-        ref_for_route = body.get("ref") or (refs[0] if isinstance(refs, list) and refs else None)
+        cand = body.get("ref") or (refs[0] if isinstance(refs, list) and refs else None)
+        ref_for_route = cand if isinstance(cand, str) and cand.startswith("mindie://") else None
     elif tool_name == "knowledge_feedback":
-        ref_for_route = body.get("ref")
+        cand = body.get("ref")
+        ref_for_route = cand if isinstance(cand, str) and cand.startswith("mindie://") else None
 
-    engine_path, engine_cfg, routed = _select_engine_config(domain=requested_domain, ref=ref_for_route)
-    from mindie_knowledge.loop.activation import Admission
+    engine_path, engine_cfg, routed = _select_engine_config(
+        domain=requested_domain,
+        ref=ref_for_route,
+        config=config,
+        workspace_root=project_root,
+    )
+    lease = ensure_default_lease(resolved_session, project_root=project_root, not_before=0.0, config=config)
+    adm_store = gate(config)
+    eng_adm = engine_cfg.get("admission_path")
+    if isinstance(eng_adm, str) and os.path.isabs(eng_adm) and Path(eng_adm).resolve() != admission_path(config).resolve():
+        from mindie_knowledge.loop.activation import Admission
 
-    lease = Admission(engine_cfg["admission_path"]).knowledge_lease(session)
-    read_bound = False
-    if lease is None and routed and tool_name in {"knowledge_query", "knowledge_explain"}:
-        default_lease = knowledge_lease(session)
-        read_bound = default_lease is not None
-    if lease is None and not read_bound:
-        raise KnowledgeInactive(
-            f"session {session} is not activated for MindIE knowledge; "
-            "invoke /mindie-agent in the WorkBuddy prompt first"
+        adm_store = Admission(eng_adm)
+        if adm_store.inspect(resolved_session).get("status") == "inactive":
+            raise KnowledgeInactive(f"session {resolved_session} is deactivated in domain {engine_cfg.get('domain')}")
+        adm_store.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lease = adm_store.activate(
+            resolved_session,
+            project_root=lease.get("project_root") or str(Path(project_root or os.getcwd()).resolve()),
+            root_session=resolved_session,
+            not_before=0.0,
         )
+    token = lease.get("token")
 
     conn = _ensure_loop_connection(engine_path)
     from mindie_knowledge.loop import summary_budget
@@ -274,37 +310,65 @@ def execute_knowledge_tool(tool_name: str, args: dict, *, session: str) -> dict:
     from mindie_knowledge.loop.transport import rpc
 
     method = tool_name.removeprefix("knowledge_")
-    if method == "distill":
-        if lease is None or not lease.get("token"):
-            raise ValueError("knowledge_distill requires an active capture lease in the target domain")
-        payload = {
-            "inputs": body.get("inputs"),
-            "task_state": body.get("task_state"),
-            "_session_id": session,
-            "_activation": lease["token"],
-        }
-        for opt_key in ("related_refs", "proposal", "topic", "target_signature"):
-            if opt_key in body:
-                payload[opt_key] = body[opt_key]
-        if not any(k in body for k in ("related_refs", "proposal", "topic", "target_signature")):
-            return distill_selected(engine_path, payload)
-        return rpc(conn, "distill", payload, timeout=summary_budget.distill_rpc_timeout())
+    succeeded = False
+    neutral = False
+    out_res = None
+    try:
+        if method == "distill":
+            if not token:
+                raise ValueError("knowledge_distill requires an active capture lease in the target domain")
+            payload = {
+                "inputs": body.get("inputs"),
+                "task_state": body.get("task_state"),
+                "_session_id": resolved_session,
+                "_activation": token,
+            }
+            for opt_key in ("related_refs", "proposal", "topic", "target_signature"):
+                if opt_key in body:
+                    payload[opt_key] = body[opt_key]
+            if not any(k in body for k in ("related_refs", "proposal", "topic", "target_signature")):
+                raw_distill = distill_selected(engine_path, payload)
+            else:
+                raw_distill = rpc(conn, "distill", payload, timeout=summary_budget.distill_rpc_timeout())
+            from mindie_knowledge.graded.distill import result_view
 
-    if method == "query":
-        from mindie_knowledge.materials.provenance import query_request
+            out_res, distill_err = result_view(raw_distill)
+            succeeded = not distill_err
+            return out_res
 
-        query_request(body.get("query"), body.get("limit", 5), body.get("conditions"), body.get("continuation"))
+        if method == "query":
+            from mindie_knowledge.materials.provenance import query_request
 
-    payload = dict(body, _session_id=session, _session_verified=True)
-    if routed:
-        payload["domain"] = engine_cfg["domain"]
-    raw_res = rpc(conn, method, payload, timeout=KNOWLEDGE_RPC_TIMEOUT)
-    if method == "sync" and isinstance(raw_res, list):
-        return {"status": "ok", "feeds": raw_res}
-    return raw_res
+            query_request(body.get("query"), body.get("limit", 5), body.get("conditions"), body.get("continuation"))
+
+        payload = dict(body, _session_id=resolved_session, _session_verified=True)
+        if routed:
+            payload["domain"] = engine_cfg["domain"]
+        rpc_timeout = KNOWLEDGE_SYNC_TIMEOUT if method == "sync" else KNOWLEDGE_RPC_TIMEOUT
+        raw_res = rpc(conn, method, payload, timeout=rpc_timeout)
+        out_res = {"status": "ok", "feeds": raw_res} if (method == "sync" and isinstance(raw_res, list)) else raw_res
+        succeeded = out_res.get("status") != "error" if isinstance(out_res, dict) else True
+        return out_res
+    finally:
+        pending = sys.exc_info()[1]
+        if pending is not None and isinstance(pending, (TimeoutError, ConnectionError)):
+            neutral = True
+        if token is not None and not neutral:
+            try:
+                adm_store.finish(resolved_session, token, succeeded)
+            except Exception as exc:
+                if pending is None and isinstance(out_res, dict):
+                    out_res["receipt_warning"] = f"{type(exc).__name__}: {exc}"
+                    out_res["receipt_unconfirmed"] = True
 
 
-def invoke(tool: str, args: dict | None = None, *, session: str | None = None) -> dict:
+def invoke(
+    tool: str,
+    args: dict | None = None,
+    *,
+    session: str | None = None,
+    config: str | Path | None = None,
+) -> dict:
     """Programmatically invoke a `knowledge_cli` command (`describe`, `mindie_status`, `knowledge_*`)."""
     if tool == "mindie_status":
         session_opt = None
@@ -312,22 +376,20 @@ def invoke(tool: str, args: dict | None = None, *, session: str | None = None) -
             session_opt = _resolve_session(session)
         except ValueError:
             session_opt = None
-        return dict(result=status_facts(session_opt), isError=False)
+        return dict(result=status_facts(session_opt, config=config), isError=False)
     resolved_session = _resolve_session(session)
+    if is_deactivated(resolved_session, config=config):
+        raise KnowledgeInactive(f"session {resolved_session} is deactivated")
     if tool == "describe":
-        lease = knowledge_lease(resolved_session)
-        if lease is None:
-            raise KnowledgeInactive(
-                f"session {resolved_session} is not activated; invoke /mindie-agent in WorkBuddy first"
-            )
+        lease = knowledge_lease(resolved_session, config=config)
         return dict(
             session_id=resolved_session,
             activated=True,
-            project_root=lease.get("project_root"),
+            project_root=lease.get("project_root") if lease else None,
             tools=PRIVATE_KNOWLEDGE_CATALOG,
             isError=False,
         )
-    res = execute_knowledge_tool(tool, args or {}, session=resolved_session)
+    res = execute_knowledge_tool(tool, args or {}, session=resolved_session, config=config)
     return dict(result=res, isError=False)
 
 
@@ -346,38 +408,18 @@ def main(argv: list[str] | None = None) -> int:
         ],
     )
     parser.add_argument("--session", default=None, help="WorkBuddy conversationId / session_id")
+    parser.add_argument("--config", default=None, help="Optional wb.json path")
     parser.add_argument("--json", dest="json_arg", default=None, help="Inline JSON object arguments")
     parser.add_argument("--input-file", dest="input_file", default=None, help="UTF-8 JSON file containing tool arguments")
     parsed = parser.parse_args(argv)
 
     try:
-        if parsed.tool == "mindie_status":
-            session_opt = None
-            try:
-                session_opt = _resolve_session(parsed.session)
-            except ValueError:
-                session_opt = None
-            out = dict(result=status_facts(session_opt), isError=False)
+        if parsed.tool in {"mindie_status", "describe"}:
+            out = invoke(parsed.tool, session=parsed.session, config=parsed.config)
             sys.stdout.buffer.write((json.dumps(out, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"))
             return 0
 
         session = _resolve_session(parsed.session)
-        if parsed.tool == "describe":
-            lease = knowledge_lease(session)
-            if lease is None:
-                raise ValueError(
-                    f"session {session} is not activated; invoke /mindie-agent in WorkBuddy first"
-                )
-            out = dict(
-                session_id=session,
-                activated=True,
-                project_root=lease.get("project_root"),
-                tools=PRIVATE_KNOWLEDGE_CATALOG,
-                isError=False,
-            )
-            sys.stdout.buffer.write((json.dumps(out, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"))
-            return 0
-
         if parsed.input_file is not None:
             with Path(parsed.input_file).open("rb") as stream:
                 raw_bytes = stream.read(MAX_INPUT_BYTES + 1)
@@ -394,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("knowledge arguments exceed 1 MiB byte budget")
             raw_in = raw_bytes.decode("utf-8-sig")
         args = json.loads(raw_in) if raw_in and raw_in.strip() else {}
-        result = execute_knowledge_tool(parsed.tool, args, session=session)
+        result = execute_knowledge_tool(parsed.tool, args, session=session, config=parsed.config)
         is_error = False
         if parsed.tool == "knowledge_distill":
             from mindie_knowledge.graded.distill import result_view

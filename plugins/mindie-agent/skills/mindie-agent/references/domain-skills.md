@@ -2,7 +2,6 @@
 
 ## 1. Graded Knowledge Tools (`mindie-knowledge` MCP & `knowledge_cli.py`)
 
-- `mindie_entry`: Manages session lease (`op="init"`, `op="status"`, `op="deactivate"`) and community sharing consent (`op="choose"`, `op="sharing-enable"`, `op="sharing-disable"`).
 - `knowledge_query`: Searches graded `L1–L4` units and task blocks (`token_budget` `1..64000`, default `8000` in reuse/diagnose and `24000` in `mode="explore"`). Returns bounded `cards` and deduplicated `foundation_cards`.
 - `knowledge_explain`: Reads exact `mindie://<domain>/units/<id>@<rev>` references and expands `requires` once (`token_budget` `1..64000`, default `16000` in reuse/diagnose and `24000` in `mode="explore"`).
 - `knowledge_feedback`: Records `discovered`, `loaded`, `applied`, or `evaluated` (`supported` | `refuted` | `inconclusive`) usage events.

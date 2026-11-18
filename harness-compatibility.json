@@ -72,7 +72,7 @@
         "plugins/mindie-agent/scripts/bridge.py:handle_user_prompt_submit"
       ],
       "test_ids": [
-        "tests/test_wb_lifecycle.py::test_explicit_mindie_agent_gesture_activates_and_deactivates_lease"
+        "tests/test_wb_lifecycle.py::test_user_prompt_submit_passthrough_creates_zero_sqlite_state"
       ],
       "evidence_refs": [
         "README.md"
@@ -91,7 +91,7 @@
         "plugins/mindie-agent/scripts/bridge.py:handle_pre_tool_use"
       ],
       "test_ids": [
-        "tests/test_wb_lifecycle.py::test_pre_tool_use_binds_mcp_call_and_rejects_replay"
+        "tests/test_wb_lifecycle.py::test_pre_tool_use_passthrough_and_identity_bind_security"
       ],
       "evidence_refs": [
         "README.md"
@@ -110,7 +110,7 @@
         "plugins/mindie-agent/scripts/bridge.py:handle_stop"
       ],
       "test_ids": [
-        "tests/test_wb_lifecycle.py::test_stop_never_forces_continuation_and_requires_manual_lease"
+        "tests/test_wb_lifecycle.py::test_stop_checks_consent_and_scope_before_auto_provisioning_lease"
       ],
       "evidence_refs": [
         "README.md"

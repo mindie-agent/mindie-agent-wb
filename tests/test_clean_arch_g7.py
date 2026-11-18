@@ -22,50 +22,28 @@ SESSION_PARENT = "454c6ee9-afea-47be-8188-abb9c7fb1f26"
 SESSION_SUBAGENT = "ec33ebf9-0cba-4100-8142-c61503f6c587"
 
 
-def test_ad11_deferred_knowledge_mcp_and_passive_unactivated_tools_list(tmp_path: Path):
-    import admission
+def test_default_enabled_knowledge_mcp_exposes_five_tools_without_creating_sqlite(tmp_path: Path):
     import mcp_server
     import paths
 
     dot_mcp = json.loads((PLUGIN_ROOT / ".mcp.json").read_text(encoding="utf-8"))
     assert dot_mcp["mcpServers"]["mindie-remote-dev"]["alwaysLoad"] is True
     assert dot_mcp["mcpServers"]["mindie-tools"]["alwaysLoad"] is True
-    assert dot_mcp["mcpServers"]["mindie-knowledge"]["alwaysLoad"] is False
-    assert dot_mcp["mcpServers"]["mindie-knowledge"]["defer_loading"] is True
+    assert dot_mcp["mcpServers"]["mindie-knowledge"]["alwaysLoad"] is True
+    assert dot_mcp["mcpServers"]["mindie-knowledge"]["defer_loading"] is False
 
-    # Before activation: tools/list on knowledge exposes ONLY mindie_entry and never creates admission.sqlite3
     adm_db = paths.admission_path()
     assert not adm_db.exists()
-    unactivated = mcp_server.handle_rpc({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, "knowledge")
-    names_before = {t["name"] for t in unactivated["result"]["tools"]}
-    assert names_before == {"mindie_entry"}
+    cold_list = mcp_server.handle_rpc({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, "knowledge")
+    names = {t["name"] for t in cold_list["result"]["tools"]}
+    assert names == {
+        "knowledge_query",
+        "knowledge_explain",
+        "knowledge_feedback",
+        "knowledge_distill",
+        "knowledge_sync",
+    }
     assert not adm_db.exists()
-
-    # Activate via mindie_entry(op="activate") -> tools/list now exposes all 6 tools
-    ws = tmp_path / "ws"
-    ws.mkdir()
-    act_resp = mcp_server.handle_rpc(
-        {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {
-                "name": "mindie_entry",
-                "arguments": {"op": "activate", "project_root": str(ws)},
-                "_meta": {"workbuddy.ai/conversationId": SESSION_PARENT},
-            },
-        },
-        "knowledge",
-    )
-    assert act_resp["result"]["isError"] is False
-    activated = mcp_server.handle_rpc({"jsonrpc": "2.0", "id": 3, "method": "tools/list"}, "knowledge")
-    names_after = {t["name"] for t in activated["result"]["tools"]}
-    assert "knowledge_query" in names_after and len(names_after) == 6
-
-    # Deactivate -> returns to mindie_entry only
-    admission.deactivate(SESSION_PARENT)
-    deactivated = mcp_server.handle_rpc({"jsonrpc": "2.0", "id": 4, "method": "tools/list"}, "knowledge")
-    assert {t["name"] for t in deactivated["result"]["tools"]} == {"mindie_entry"}
 
 
 def test_ad02_shared_remote_dev_state_dir_across_parent_and_subagent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -132,7 +110,7 @@ def test_passive_stop_fastpath_and_seed_bundle_integrity(tmp_path: Path):
     assert host_adapter.verify_seed_bundle(copied) == lock
 
     launch_script = SCRIPTS_DIR / "mindie_launch.py"
-    payload = json.dumps({"session_id": SESSION_PARENT})
+    payload = json.dumps({"session_id": SESSION_PARENT, "cwd": str(tmp_path)})
     subprocess.run([sys.executable, "-I", str(launch_script), "hook", "stop"], input=payload, text=True, capture_output=True, check=True)
     samples_ms: list[float] = []
     res = None
@@ -142,6 +120,7 @@ def test_passive_stop_fastpath_and_seed_bundle_integrity(tmp_path: Path):
         samples_ms.append((time.perf_counter() - t0) * 1000.0)
     assert res is not None and json.loads(res.stdout) == {"suppressOutput": True}
     assert min(samples_ms) < 100.0
+    assert not __import__("paths").admission_path().exists()
 
 
 def test_host_adapter_concurrent_mcp_and_harness_rsi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -155,7 +134,13 @@ def test_host_adapter_concurrent_mcp_and_harness_rsi(tmp_path: Path, monkeypatch
     assert isinstance(adapter, HostAdapter)
     profile = adapter.resolve_profile()
     assert profile.host == "wb"
-    assert [t["name"] for t in adapter.mcp_tools("knowledge", profile)] == ["mindie_entry"]
+    assert {t["name"] for t in adapter.mcp_tools("knowledge", profile)} == {
+        "knowledge_query",
+        "knowledge_explain",
+        "knowledge_feedback",
+        "knowledge_distill",
+        "knowledge_sync",
+    }
     assert rsi_loop.__name__.startswith("mindie_harness.rsi")
     assert experiment_ledger.__name__.startswith("mindie_harness.rsi")
 
@@ -248,13 +233,11 @@ def test_ad07_symlinks_ad10_skill_hygiene_and_v0_1_14_upgrade(tmp_path: Path):
     assert admission.knowledge_lease(SESSION_PARENT, config=cfg) is not None
 
 
-def test_idle_mcp_emits_tools_list_changed_on_external_hook_activation(tmp_path: Path):
-    import admission
+def test_idle_mcp_emits_tools_list_changed_on_profile_config_update(tmp_path: Path):
     import host_adapter
     import mcp_server
+    import paths
 
-    ws = tmp_path / "ws-idle"
-    ws.mkdir()
     r_in, w_in = os.pipe()
     r_out, w_out = os.pipe()
     srv = threading.Thread(
@@ -275,10 +258,9 @@ def test_idle_mcp_emits_tools_list_changed_on_external_hook_activation(tmp_path:
 
         host_adapter.write_wire_frame(writer, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, "jsonl")
         list_before, _, _ = host_adapter.read_wire_frame(reader)
-        assert {t["name"] for t in list_before["result"]["tools"]} == {"mindie_entry"}
+        assert len(list_before["result"]["tools"]) == 5
 
-        # Simulate external UserPromptSubmit hook activating /mindie-agent while MCP is completely idle
-        admission.activate(SESSION_PARENT, ws)
+        paths.atomic_write_json(paths.config_path(), {"harness": "workbuddy", "python": sys.executable})
 
         received: list[dict] = []
         got_notification = threading.Event()
@@ -295,7 +277,7 @@ def test_idle_mcp_emits_tools_list_changed_on_external_hook_activation(tmp_path:
 
         host_adapter.write_wire_frame(writer, {"jsonrpc": "2.0", "id": 3, "method": "tools/list"}, "jsonl")
         list_after, _, _ = host_adapter.read_wire_frame(reader)
-        assert len(list_after["result"]["tools"]) == 6
+        assert len(list_after["result"]["tools"]) == 5
     finally:
         writer.close()
         srv.join(timeout=3.0)

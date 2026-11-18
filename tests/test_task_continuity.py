@@ -52,7 +52,7 @@ def test_uncertain_result_stays_unknown_in_receipt(session, tmp_path, monkeypatc
 
 @pytest.mark.parametrize("surface,name,arguments", [
     ("remote", "remote_auth", {"host": "auth.example", "port": 22, "action": "status"}),
-    ("knowledge", "mindie_entry", {"op": "status"}),
+    ("knowledge", "knowledge_sync", {}),
 ])
 def test_admission_failure_does_not_terminate_stdio_server(tmp_path, monkeypatch, surface, name, arguments):
     import os
@@ -91,8 +91,13 @@ def test_admission_failure_does_not_terminate_stdio_server(tmp_path, monkeypatch
     assert replies[4]["result"]["tools"]
 
 
-def test_deterministic_tools_execute_without_meta_or_pretool_bind_while_knowledge_stays_gated(tmp_path, monkeypatch):
+def test_all_surfaces_execute_without_meta_or_pretool_bind_with_replay_guard(tmp_path, monkeypatch):
+    import knowledge_cli
+
     monkeypatch.delenv("AGY_CONVERSATION_ID", raising=False)
+    monkeypatch.delenv("WB_CONVERSATION_ID", raising=False)
+    monkeypatch.delenv("WORKBUDDY_SESSION_ID", raising=False)
+    monkeypatch.delenv("CODEBUDDY_SESSION_ID", raising=False)
     monkeypatch.delenv("REMOTE_DEV_SESSION_ID", raising=False)
     monkeypatch.setenv("REMOTE_DEV_AUTH_DIR", str(tmp_path / "auth"))
     receipts = mcp_server.RemoteReceipts(tmp_path / "receipts.sqlite3")
@@ -103,8 +108,10 @@ def test_deterministic_tools_execute_without_meta_or_pretool_bind_while_knowledg
     assert remote_res["isError"] is False
     tools_res = mcp_server.call_tools_surface("diagnostics_status", {}, meta=None)
     assert tools_res["isError"] is False
-    knowledge_res = mcp_server.call_knowledge_surface("mindie_entry", {"op": "status"}, meta=None)
-    assert knowledge_res["isError"] is True
+    monkeypatch.setattr(knowledge_cli, "_ensure_loop_connection", lambda _eng: {"socket": "mock"})
+    monkeypatch.setattr("mindie_knowledge.loop.transport.rpc", lambda conn, method, payload, timeout=30.0: {"cards": []})
+    knowledge_res = mcp_server.call_knowledge_surface("knowledge_query", {"query": "A3 HCCL"}, meta=None)
+    assert knowledge_res["isError"] is False
     req = {
         "jsonrpc": "2.0", "id": 88, "method": "tools/call",
         "params": {"name": "diagnostics_status", "arguments": {}},
@@ -137,7 +144,12 @@ def test_deterministic_tools_execute_without_meta_or_pretool_bind_while_knowledg
     wb_sess = "wb-session-replay-guard"
     replay_receipts = mcp_server.RemoteReceipts(tmp_path / "replay-receipts.sqlite3")
     publish_bind(wb_sess, "remote", "remote_auth", rem_args)
-    rem_req = {"jsonrpc": "2.0", "id": 99, "method": "tools/call", "params": {"name": "remote_auth", "arguments": rem_args}}
+    rem_req = {
+        "jsonrpc": "2.0",
+        "id": 99,
+        "method": "tools/call",
+        "params": {"name": "remote_auth", "arguments": rem_args, "_meta": {"workbuddy.ai/conversationId": wb_sess}},
+    }
     assert mcp_server.handle_rpc(rem_req, "remote", receipts=replay_receipts)["result"]["isError"] is False
     publish_bind(wb_sess, "remote", "remote_auth", rem_args)
     assert mcp_server.handle_rpc(rem_req, "remote", receipts=replay_receipts)["result"]["isError"] is True

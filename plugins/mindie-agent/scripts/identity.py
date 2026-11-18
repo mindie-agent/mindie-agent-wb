@@ -1,28 +1,26 @@
-"""Tencent WorkBuddy native hook payload validator and one-shot MCP bind store.
+"""Tencent WorkBuddy native hook payload validator and optional MCP bind store.
 
 [Role]
 Validates WorkBuddy / CodeBuddy hook payloads (`session_id`, `conversationId`,
-`cwd`, `transcript_path`, `prompt`, `command_name`, `arguments`, `tool_name`,
-`tool_input`, `tool_use_id`, `call_id`) and manages one-shot SQLite WAL binds
-connecting `PreToolUse` (and `params._meta["workbuddy.ai/conversationId"]`) to
-`mcp_server.py`.
+`cwd`, `transcript_path`, `tool_name`, `tool_input`, `tool_use_id`, `call_id`)
+and manages optional one-shot SQLite WAL binds (`mcp-binds.sqlite3`) plus
+verified WorkBuddy transport metadata (`workbuddy.ai/conversationId`).
 
 [Invariants]
 - Native task identity comes strictly from `session_id` / `conversationId` in
   hook payloads, `params._meta["workbuddy.ai/conversationId"]` in the WorkBuddy
-  MCP transport envelope, or `WB_CONVERSATION_ID` in the environment—never from
-  model-controlled tool arguments (`params.arguments`).
-- `PreToolUse` binds `(surface, local_tool, args_digest)` to `(session_id,
-  step_idx, workspace_root, transcript_path)` with a 120s TTL; `claim_bind`
-  consumes each bind at most once under `BEGIN IMMEDIATE`.
+  MCP transport envelope, or `WB_CONVERSATION_ID` / `WORKBUDDY_SESSION_ID` /
+  `CODEBUDDY_SESSION_ID` in the environment—never from model-controlled tool
+  arguments (`params.arguments`).
+- When a `PreToolUse` bind exists in `mcp-binds.sqlite3`, `claim_bind` consumes
+  it at most once under `BEGIN IMMEDIATE` (120s TTL).
 
 [Timeouts & Locks]
 - Opens `mcp-binds.sqlite3` with `PRAGMA journal_mode=WAL` and
-  `PRAGMA busy_timeout=5000` (`timeout=5.0`) once per connection; no `.owner`
-  `lstat` or schema reflection on hot paths.
+  `PRAGMA busy_timeout=5000` (`timeout=5.0`) once per connection when mutating.
 
 [Side-Effect Policy]
-- Mutates only `state_dir() / "mcp-binds.sqlite3"`.
+- Read-only unless `publish_bind` or `remember_session_context` is explicitly called.
 """
 
 from __future__ import annotations
@@ -37,10 +35,7 @@ import time
 
 from paths import bind_db_path
 
-SESSION_RE = re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9_.-]{3,127}\Z"
-)
-GESTURE_RE = re.compile(r"^\s*(?:/mindie-agent(?::mindie-agent)?|\$mindie-agent(?::mindie-agent)?)(?=\s|$)")
+SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{3,127}\Z")
 WB_MCP_TOOL_RE = re.compile(
     r"^mcp__?(?:plugin[-_][A-Za-z0-9_-]+[-_])?(mindie[-_]remote[-_]dev|mindie[-_]tools|mindie[-_]knowledge)__?([A-Za-z0-9_.]+)\Z"
 )
@@ -91,9 +86,10 @@ def session_from_hook(event: dict) -> str:
 
 
 def workspace_from_hook(event: dict) -> str:
-    cwd = event.get("cwd")
-    if isinstance(cwd, str) and os.path.isabs(cwd):
-        return str(Path(cwd).resolve())
+    for key in ("cwd", "workspace_root", "workspaceRoot", "directory", "project_root"):
+        val = event.get(key)
+        if isinstance(val, str) and os.path.isabs(val):
+            return str(Path(val).resolve())
     paths = event.get("workspacePaths")
     if isinstance(paths, list) and paths:
         first = paths[0]
@@ -107,24 +103,6 @@ def transcript_from_hook(event: dict) -> str | None:
     if isinstance(value, str) and os.path.isabs(value):
         return str(Path(value))
     return None
-
-
-def parse_mindie_gesture(event: dict) -> tuple[bool, str]:
-    """Return `(is_gesture, subcommand_or_body)` from `UserPromptSubmit` or `UserPromptExpansion`."""
-    cmd_name = event.get("command_name")
-    if isinstance(cmd_name, str) and cmd_name.strip() in {"mindie-agent", "mindie-agent:mindie-agent"}:
-        args = event.get("arguments")
-        return True, args.strip() if isinstance(args, str) else ""
-    prompt = event.get("prompt")
-    if not isinstance(prompt, str):
-        prompt = event.get("lastUserInput")
-    if not isinstance(prompt, str):
-        return False, ""
-    match = GESTURE_RE.match(prompt)
-    if match is None:
-        return False, ""
-    remainder = prompt[match.end():].strip()
-    return True, remainder
 
 
 def parse_wb_mcp_tool(event_or_call: dict) -> tuple[str, str, dict] | None:
@@ -335,15 +313,38 @@ def publish_bind(
         db.close()
 
 
+def _has_meta_or_env_claim_hint(meta: dict | None) -> bool:
+    if isinstance(meta, dict):
+        for key in (
+            "bind_id",
+            "_mindie_bind_id",
+            "tool_use_id",
+            "toolUseId",
+            "call_id",
+            "callId",
+            "workbuddy.ai/conversationId",
+            "conversationId",
+            "session_id",
+            "sessionId",
+        ):
+            if meta.get(key) is not None:
+                return True
+    for env_key in ("WB_CONVERSATION_ID", "WORKBUDDY_SESSION_ID", "CODEBUDDY_SESSION_ID", "AGY_CONVERSATION_ID"):
+        raw_env = os.environ.get(env_key)
+        if isinstance(raw_env, str) and raw_env.strip():
+            return True
+    return False
+
+
 def _extract_verified_meta_session(meta: dict | None) -> str | None:
     if isinstance(meta, dict):
-        for key in ("workbuddy.ai/conversationId", "conversationId"):
+        for key in ("workbuddy.ai/conversationId", "conversationId", "session_id", "sessionId"):
             raw = meta.get(key)
             if raw is not None:
                 if not isinstance(raw, str) or not SESSION_RE.fullmatch(raw.strip()):
                     raise ValueError(f"invalid {key} in MCP metadata")
                 return raw.strip().lower()
-    for env_key in ("WB_CONVERSATION_ID", "CODEBUDDY_SESSION_ID", "AGY_CONVERSATION_ID"):
+    for env_key in ("WB_CONVERSATION_ID", "WORKBUDDY_SESSION_ID", "CODEBUDDY_SESSION_ID", "AGY_CONVERSATION_ID"):
         raw_env = os.environ.get(env_key)
         if isinstance(raw_env, str) and raw_env.strip():
             if not SESSION_RE.fullmatch(raw_env.strip()):
@@ -431,19 +432,16 @@ def claim_bind(
             db.close()
 
     if meta_session is not None:
-        publish_bind(
-            meta_session,
-            surface,
-            local_tool,
-            arguments,
-            config=config,
-        )
-        return claim_bind(
-            surface,
-            local_tool,
-            arguments,
-            meta={"workbuddy.ai/conversationId": meta_session},
-            config=config,
+        ctx = session_context(meta_session, config=config)
+        return dict(
+            bind_id=None,
+            session=meta_session,
+            workspace_root=ctx.get("workspace_root"),
+            transcript_path=ctx.get("transcript_path"),
+            step_idx=0,
+            tool_use_id=None,
+            surface=surface,
+            local_tool=local_tool,
         )
 
     if not path.is_file():

@@ -19,8 +19,8 @@ code/
 ## 2. 宿主插件核心契约（不可破坏）
 
 1. **Connector 与原生插件双表面兼容**：完整保留 `plugin.json` + `mcp.json`（Connector）与 `.codebuddy-plugin` + `.mcp.json` + `hooks/hooks.json`（原生 CLI 插件）两套入口及 `wb` 原生远端工具镜像。
-2. **被动默认与按需暴露知识面（`P2.1` / `P2.2` / `AD-11`）**：`.mcp.json` 中 `mindie-knowledge` 保持 `alwaysLoad: false, defer_loading: true`；未激活 `/mindie-agent` 时 `knowledge` 表面 `tools/list` 仅返回 `mindie_entry`（零暴露 `knowledge_*`）；未激活 `Stop` 在 `100ms` 内返回 `{"suppressOutput": true}`。
-3. **确定性工具零预绑定门禁与共享远端任务目录（`P2.7` / `AD-02`）**：`mindie-remote-dev` 与 `mindie-tools` 在无 `_meta`、无 `PreToolUse` 绑定时直接可用，`REMOTE_DEV_STATE_DIR` 共享到 profile 级 `remote/` 目录以支持子智能体查询父会话 `job_id`。
+2. **静默认启用知识面与授权门控 `Stop`（`P2.7` / `P2.8`）**：`.mcp.json` 中三组 MCP 服务统一保持 `alwaysLoad: true, defer_loading: false`，启动即暴露全部 5 项 `knowledge_*` 工具；`Stop` 先校验社区共享授权与 `project_roots` 范围，关闭或越界时在 `100ms` 内返回 `{"suppressOutput": true}` 且不创建 `admission.sqlite3`。
+3. **全量工具零预绑定门禁与共享远端任务目录（`P2.7` / `AD-02`）**：`mindie-remote-dev`、`mindie-tools` 与 `mindie-knowledge` 在无 `_meta`、无 `PreToolUse` 绑定时直接可用，`REMOTE_DEV_STATE_DIR` 共享到 profile 级 `remote/` 目录以支持子智能体查询父会话 `job_id`。
 4. **Windows 零弹窗与 Unix LF**：Windows 子进程统一携带 `CREATE_NO_WINDOW`，全仓文本文件保持 Unix `LF`（`\n`）换行。
 
 ## 3. 测试隔离与提交前自查

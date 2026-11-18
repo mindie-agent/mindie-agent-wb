@@ -2,25 +2,20 @@
 
 [Role]
 Dispatches Tencent WorkBuddy lifecycle hooks (`hook session-start`,
-`hook user-prompt-expansion`, `hook user-prompt-submit`, `hook pre-tool-use`,
-`hook stop`), stdio MCP servers (`mcp remote`, `mcp tools`, `mcp knowledge`),
-setup commands (`setup ...`), and component updates (`update ...`) under explicit
-timeout budgets.
+`hook user-prompt-submit`, `hook pre-tool-use`, `hook stop`), stdio MCP servers
+(`mcp remote`, `mcp tools`, `mcp knowledge`), setup commands (`setup ...`), and
+component updates (`update ...`) under explicit timeout budgets.
 
 [Invariants]
 - Enforces `HOOK_TOTAL = 10.0s >= HOOK_EXEC_BUDGET (8.0s) + CLEANUP_GRACE (2.0s)`.
-- Hook failures emit a host-visible error payload and exit 0. WorkBuddy fail-opens
-  on a bare non-zero exit, so PreToolUse uses `permissionDecision=deny` rather than
-  propagating interpreter/child non-zero status. They never print
-  `{"suppressOutput": true}` to hide the fault.
-- Re-executes into the configured profile interpreter with `-I -X utf8` and kills
-  the child process tree (POSIX session / Windows Job Object) on re-exec timeout.
+- Passive `Stop` and `UserPromptSubmit` fast-paths execute in pure stdlib before
+  `_preferred_python()`, re-exec, or `bridge` import (`< 100ms`, zero SQLite created).
+- Hook failures emit a host-visible error payload and exit 0 (`permissionDecision=deny`
+  on `PreToolUse`), never printing `{"suppressOutput": true}` to mask faults.
 
 [Timeouts & Locks]
 - `HOOK_EXEC_BUDGET = 8.0s`, `HOOK_CLEANUP_GRACE = 2.0s`, `HOOK_TOTAL = 10.0s`,
   `HOOK_LOCK_BUDGET = 2.0s`, `BOOTSTRAP_TOTAL = 540.0s`, `SETUP_REEXEC_GRACE = 15.0s`.
-  Hook re-exec uses `timeout=HOOK_EXEC_BUDGET`; setup/update re-exec uses bounded
-  `BOOTSTRAP_TOTAL + SETUP_REEXEC_GRACE`; MCP stdio stays unbounded.
 
 [Side-Effect Policy]
 - Delegates hook, MCP, setup, and update execution to `bridge.py`,
@@ -29,16 +24,21 @@ timeout budgets.
 
 from __future__ import annotations
 
+import io
+import json
+import math
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
+import types
 
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from paths import admission_path, apply_enterprise_transport_env, config_home, config_path, data_home, read_json
+from paths import apply_enterprise_transport_env, community_config_path, config_home, config_path, data_home, read_json
 
 HOOK_EXEC_BUDGET = 8.0
 HOOK_CLEANUP_GRACE = 2.0
@@ -46,7 +46,8 @@ HOOK_TOTAL = HOOK_EXEC_BUDGET + HOOK_CLEANUP_GRACE
 HOOK_LOCK_BUDGET = 2.0
 BOOTSTRAP_TOTAL = 540.0
 SETUP_REEXEC_GRACE = 15.0
-_STDLIB_POPEN = subprocess.Popen
+MAX_HOOK_STDIN_BYTES = 32 * 1024 * 1024
+_SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{3,127}\Z")
 _HOOK_EVENT_NAMES = {
     "session-start": "SessionStart",
     "user-prompt-expansion": "UserPromptExpansion",
@@ -55,6 +56,99 @@ _HOOK_EVENT_NAMES = {
     "pre-tool-use": "PreToolUse",
     "stop": "Stop",
 }
+
+
+def _parse_hook_stdin(raw: bytes) -> dict:
+    if len(raw) > MAX_HOOK_STDIN_BYTES:
+        raise ValueError("native hook payload exceeds 32 MiB byte budget")
+    if not raw.strip():
+        return {}
+    event = json.loads(raw.decode("utf-8"))
+    if not isinstance(event, dict):
+        raise ValueError("native hook payload must be a JSON object")
+    return event
+
+
+def _path_within_stdlib(candidate: str, root: str) -> bool:
+    try:
+        cand_res = str(Path(candidate).expanduser().resolve())
+        root_res = str(Path(root).expanduser().resolve())
+    except TimeoutError:
+        raise
+    except OSError:
+        return False
+    if os.name == "nt":
+        cand_res = os.path.normcase(cand_res)
+        root_res = os.path.normcase(root_res)
+    if cand_res == root_res:
+        return True
+    try:
+        rel = os.path.relpath(cand_res, root_res)
+    except ValueError:
+        return False
+    return rel != ".." and not rel.startswith(".." + os.sep) and not os.path.isabs(rel)
+
+
+def _may_capture_stop_stdlib(event: dict) -> bool:
+    """Pure-stdlib fast-path check without importing `bridge`, `identity`, or `remote_dev`."""
+    if event.get("stop_hook_active") is True:
+        return False
+    cfg_file = config_path()
+    if not cfg_file.is_file():
+        return False
+    raw_sid = event.get("session_id") or event.get("conversationId")
+    if not isinstance(raw_sid, str) or not _SESSION_RE.fullmatch(raw_sid.strip()):
+        return False
+    workspace = None
+    for key in ("cwd", "workspace_root", "workspaceRoot", "directory", "project_root"):
+        val = event.get(key)
+        if isinstance(val, str) and os.path.isabs(val):
+            workspace = val
+            break
+    if workspace is None:
+        wpaths = event.get("workspacePaths")
+        if isinstance(wpaths, list) and wpaths and isinstance(wpaths[0], str) and os.path.isabs(wpaths[0]):
+            workspace = wpaths[0]
+    if workspace is None:
+        return False
+
+    comm_file = community_config_path(cfg_file)
+    if not comm_file.is_file():
+        return False
+    try:
+        comm = read_json(comm_file)
+    except TimeoutError:
+        raise
+    except (OSError, ValueError):
+        return False
+    if (
+        comm.get("schema") != "mindie-community-config/1"
+        or comm.get("enabled") is not True
+        or not isinstance(comm.get("generation"), str)
+        or not comm["generation"]
+        or type(comm.get("enabled_at")) not in (int, float)
+        or not math.isfinite(comm["enabled_at"])
+        or comm["enabled_at"] <= 0
+    ):
+        return False
+    consent_ref = comm.get("consent_config")
+    if not isinstance(consent_ref, str) or not os.path.isabs(consent_ref):
+        return False
+    cfile = Path(consent_ref)
+    if not cfile.is_file():
+        return False
+    try:
+        consent = read_json(cfile)
+    except TimeoutError:
+        raise
+    except (OSError, ValueError):
+        return False
+    if consent.get("choice") != "contribute":
+        return False
+    roots = comm.get("project_roots")
+    if not isinstance(roots, list) or not roots or not all(isinstance(r, str) and os.path.isabs(r) for r in roots):
+        return False
+    return any(_path_within_stdlib(workspace, root) for root in roots)
 
 
 def _norm_python_path(py_exe: str | Path) -> Path:
@@ -112,8 +206,6 @@ def _preferred_python() -> str | None:
 
 
 def _emit_hook_failure(action: str, exc: BaseException) -> int:
-    import json
-
     event_name = _HOOK_EVENT_NAMES.get(action, action)
     detail = f"{type(exc).__name__}: {exc}"
     print(f"MindIE WorkBuddy hook error: {detail}", file=sys.stderr)
@@ -160,11 +252,7 @@ def _parse_cli_timeout(argv: list[str]) -> float | None:
 def _timeout_role_budget(role: str, argv: list[str] | None = None) -> float | None:
     if role == "hook":
         return HOOK_EXEC_BUDGET
-    if role == "setup":
-        requested = _parse_cli_timeout(argv or [])
-        inner = BOOTSTRAP_TOTAL if requested is None else requested
-        return inner + SETUP_REEXEC_GRACE
-    if role == "update":
+    if role in {"setup", "update"}:
         requested = _parse_cli_timeout(argv or [])
         inner = BOOTSTRAP_TOTAL if requested is None else requested
         return inner + SETUP_REEXEC_GRACE
@@ -197,7 +285,14 @@ def _run_hook_with_exec_budget(action: str, rest: list[str]) -> int:
             signal.signal(signal.SIGALRM, previous)
 
 
-def _reexec(target_py: str, target_script: Path, argv: list[str], env: dict) -> int:
+def _reexec(
+    target_py: str,
+    target_script: Path,
+    argv: list[str],
+    env: dict,
+    *,
+    stdin_bytes: bytes | None = None,
+) -> int:
     from bounded import _attach_windows_job, _close_windows_job, _kill_process_tree
 
     timeout = _timeout_role_budget(argv[0], argv)
@@ -208,19 +303,23 @@ def _reexec(target_py: str, target_script: Path, argv: list[str], env: dict) -> 
         if timeout is not None:
             flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         popen_kwargs["creationflags"] = flags
-        popen_kwargs["stdin"] = _reexec_stdio(sys.stdin)
+        popen_kwargs["stdin"] = subprocess.PIPE if stdin_bytes is not None else _reexec_stdio(sys.stdin)
         popen_kwargs["stdout"] = _reexec_stdio(sys.stdout)
         popen_kwargs["stderr"] = _reexec_stdio(sys.stderr)
-    elif timeout is not None:
-        popen_kwargs["start_new_session"] = True
+    else:
+        if stdin_bytes is not None:
+            popen_kwargs["stdin"] = subprocess.PIPE
+        if timeout is not None:
+            popen_kwargs["start_new_session"] = True
 
     if timeout is None:
-        return int(subprocess.run(cmd, **popen_kwargs).returncode)
+        return int(subprocess.run(cmd, input=stdin_bytes, **popen_kwargs).returncode)
 
     proc = subprocess.Popen(cmd, **popen_kwargs)
     job = _attach_windows_job(proc, kill_on_close=(argv[0] != "hook"))
     try:
-        rc = int(proc.wait(timeout=timeout))
+        proc.communicate(input=stdin_bytes, timeout=timeout)
+        rc = int(proc.returncode)
     except (subprocess.TimeoutExpired, TimeoutError) as exc:
         _kill_process_tree(proc, job, wait_timeout=min(0.5, HOOK_CLEANUP_GRACE))
         job = None
@@ -258,12 +357,24 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _dispatch(argv: list[str]) -> int:
+    buffered_stdin: bytes | None = None
+    if argv in (["hook", "user-prompt-submit"], ["hook", "user-prompt-expansion"]):
+        _parse_hook_stdin(sys.stdin.buffer.read(MAX_HOOK_STDIN_BYTES + 1))
+        sys.stdout.buffer.write(b'{"suppressOutput": true}\n')
+        sys.stdout.buffer.flush()
+        return 0
+
+    if argv == ["hook", "stop"] and os.environ.get("_MINDIE_WB_REEXEC") != "1":
+        buffered_stdin = sys.stdin.buffer.read(MAX_HOOK_STDIN_BYTES + 1)
+        event = _parse_hook_stdin(buffered_stdin)
+        if not _may_capture_stop_stdlib(event):
+            sys.stdout.buffer.write(b'{"suppressOutput": true}\n')
+            sys.stdout.buffer.flush()
+            return 0
+
     target_py = _preferred_python()
     target_script = Path(__file__).resolve()
     if argv[0] in {"hook", "mcp"} and config_path().is_file():
-        # The profile activates interpreter and payload together. A newly
-        # downloaded native entry must keep serving the previous generation
-        # until installation has prepared and activated its replacement.
         active = read_json(config_path())
         active_python = active.get("python")
         active_scripts = active.get("runtime_scripts")
@@ -285,17 +396,7 @@ def _dispatch(argv: list[str]) -> int:
                     break
             else:
                 raise RuntimeError("active plugin payload does not match its recorded version")
-    if (
-        argv == ["hook", "stop"]
-        and subprocess.Popen is _STDLIB_POPEN
-        and not admission_path().is_file()
-    ):
-        from identity import MAX_HOOK_BYTES, parse_hook
 
-        parse_hook(sys.stdin.buffer.read(MAX_HOOK_BYTES + 1))
-        sys.stdout.buffer.write(b'{"suppressOutput": true}\n')
-        sys.stdout.buffer.flush()
-        return 0
     if (
         target_py is not None
         and (_norm_python_path(sys.executable) != _norm_python_path(target_py)
@@ -309,7 +410,10 @@ def _dispatch(argv: list[str]) -> int:
             env["WB_PLUGIN_ROOT"] = str(target_script.parent.parent)
         if argv[0] == "hook":
             env["_MINDIE_WB_HOOK_BUDGETED"] = "1"
-        return _reexec(target_py, target_script, argv, env)
+        return _reexec(target_py, target_script, argv, env, stdin_bytes=buffered_stdin)
+
+    if buffered_stdin is not None:
+        sys.stdin = types.SimpleNamespace(buffer=io.BytesIO(buffered_stdin))  # type: ignore[assignment]
 
     role = argv[0]
     rest = argv[1:]
@@ -324,7 +428,7 @@ def _dispatch(argv: list[str]) -> int:
             env["_MINDIE_WB_REEXEC"] = "1"
             env["PYTHONIOENCODING"] = "utf-8"
             env["PYTHONUTF8"] = "1"
-            return _reexec(sys.executable, Path(__file__).resolve(), argv, env)
+            return _reexec(sys.executable, Path(__file__).resolve(), argv, env, stdin_bytes=buffered_stdin)
         if os.name != "nt" and not budgeted:
             return _run_hook_with_exec_budget(action, rest)
         try:
