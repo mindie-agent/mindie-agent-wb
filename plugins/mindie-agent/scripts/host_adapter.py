@@ -206,7 +206,7 @@ def is_fast_lane_tool(surface: str, name: str, arguments: Mapping[str, Any]) -> 
     if surface == "tools":
         return name in _FAST_TOOLS
     if surface == "knowledge":
-        return name in {"mindie_entry", "knowledge_query", "knowledge_explain"}
+        return name in {"knowledge_query", "knowledge_explain"}
     lowered = name.lower()
     if lowered == "remote_auth":
         return arguments.get("action") == "status"

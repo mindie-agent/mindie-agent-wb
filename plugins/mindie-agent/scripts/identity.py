@@ -86,9 +86,10 @@ def session_from_hook(event: dict) -> str:
 
 
 def workspace_from_hook(event: dict) -> str:
-    cwd = event.get("cwd")
-    if isinstance(cwd, str) and os.path.isabs(cwd):
-        return str(Path(cwd).resolve())
+    for key in ("cwd", "workspace_root", "workspaceRoot", "directory", "project_root"):
+        val = event.get(key)
+        if isinstance(val, str) and os.path.isabs(val):
+            return str(Path(val).resolve())
     paths = event.get("workspacePaths")
     if isinstance(paths, list) and paths:
         first = paths[0]
@@ -310,6 +311,29 @@ def publish_bind(
             return bind_id
     finally:
         db.close()
+
+
+def _has_meta_or_env_claim_hint(meta: dict | None) -> bool:
+    if isinstance(meta, dict):
+        for key in (
+            "bind_id",
+            "_mindie_bind_id",
+            "tool_use_id",
+            "toolUseId",
+            "call_id",
+            "callId",
+            "workbuddy.ai/conversationId",
+            "conversationId",
+            "session_id",
+            "sessionId",
+        ):
+            if meta.get(key) is not None:
+                return True
+    for env_key in ("WB_CONVERSATION_ID", "WORKBUDDY_SESSION_ID", "CODEBUDDY_SESSION_ID", "AGY_CONVERSATION_ID"):
+        raw_env = os.environ.get(env_key)
+        if isinstance(raw_env, str) and raw_env.strip():
+            return True
+    return False
 
 
 def _extract_verified_meta_session(meta: dict | None) -> str | None:

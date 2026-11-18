@@ -7,7 +7,8 @@ turn-end transcript capture gated by community consent and `project_roots`.
 
 [Invariants]
 - Zero-I/O Ordinary Hooks: `SessionStart`, `UserPromptSubmit`, and `PreToolUse`
-  never create or mutate `admission.sqlite3` or `mcp-binds.sqlite3`.
+  never create or mutate `admission.sqlite3` or `mcp-binds.sqlite3`, and
+  `PreToolUse` never auto-approves host permission prompts (`{"suppressOutput": true}`).
 - Consent-First `Stop`: `Stop` checks `mindie-community.json` (`enabled=true` +
   authorized `project_roots`) and `mindie-consent.json` (`choice="contribute"`)
   before opening `admission.sqlite3`; when off or out of scope, zero SQLite
@@ -18,9 +19,9 @@ turn-end transcript capture gated by community consent and `project_roots`.
   spawns at most one detached background component-update check (`300s` throttle).
 
 [Side-Effect Policy]
-- Auto-provisions `admission.sqlite3` (`not_before=0.0`) and invokes
-  `capture_hook` on `Stop` exclusively when community sharing is enabled and the
-  session workspace is inside authorized `project_roots`.
+- Auto-provisions `admission.sqlite3` (`not_before=0.0`), prepares `state-v4.sqlite3`
+  if absent, and invokes `capture_hook` (`hook_event_name="Stop"`, `identity_kind="turn"`)
+  exclusively when community sharing is enabled and the session workspace is in scope.
 """
 
 from __future__ import annotations
@@ -35,8 +36,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from admission import ensure_default_lease, is_deactivated, knowledge_lease
-from component_update import trigger_background_update_if_due
+from admission import ensure_default_lease, is_deactivated
 from identity import (
     _reject_identity_arguments,
     parse_hook,
@@ -46,8 +46,7 @@ from identity import (
     transcript_from_hook,
     workspace_from_hook,
 )
-from paths import admission_path, community_config_path, data_home, engine_config_path, read_json
-import wb_transcript
+from paths import community_config_path, data_home, engine_config_path, read_json
 
 
 def _emit(payload: dict) -> int:
@@ -78,8 +77,10 @@ def _path_is_within_stdlib(candidate: str | Path, root: str | Path) -> bool:
 
 def may_capture_community_stop(event: dict, *, config=None) -> tuple[bool, str | None]:
     """Pure-stdlib pre-gate checking community consent and `project_roots` before touching SQLite."""
+    if event.get("stop_hook_active") is True:
+        return False, None
     try:
-        session = session_from_hook(event)
+        session_from_hook(event)
     except ValueError:
         return False, None
 
@@ -137,6 +138,8 @@ def may_capture_community_stop(event: dict, *, config=None) -> tuple[bool, str |
 
 def handle_session_start(event: dict, *, config=None) -> dict:
     """Passive `SessionStart` hook: triggers non-blocking update check if due with zero SQLite I/O."""
+    from component_update import trigger_background_update_if_due
+
     _ = event
     spawned = trigger_background_update_if_due(config=config)
     if spawned is None:
@@ -169,19 +172,27 @@ handle_user_prompt_submit = handle_user_prompt
 
 
 def handle_pre_tool_use(event: dict) -> dict:
-    """Lightweight pass-through `PreToolUse` hook validating argument hygiene without SQLite writes."""
+    """Lightweight pass-through `PreToolUse` hook validating argument hygiene without auto-approving host prompts."""
     parsed = parse_wb_mcp_tool(event)
     if parsed is None:
         return {"suppressOutput": True}
     surface, _local_tool, args = parsed
     _reject_identity_arguments(args, surface)
-    return dict(
-        hookSpecificOutput=dict(
-            hookEventName="PreToolUse",
-            permissionDecision="allow",
-        ),
-        suppressOutput=True,
-    )
+    return {"suppressOutput": True}
+
+
+def _resolve_turn_id(event: dict, session: str, transcript_path: str) -> str:
+    for key in ("turn_id", "turnId", "message_id", "messageId", "event_id", "eventId"):
+        cand = event.get(key)
+        if isinstance(cand, str) and cand.strip():
+            return cand.strip()[:256]
+    try:
+        st = Path(transcript_path).stat()
+        return f"{session}:stop:{st.st_size}:{st.st_mtime_ns}"[:256]
+    except TimeoutError:
+        raise
+    except OSError:
+        return f"{session}:stop"[:256]
 
 
 def handle_stop(event: dict, *, config=None) -> dict:
@@ -210,12 +221,15 @@ def handle_stop(event: dict, *, config=None) -> dict:
     if not eng_file.is_file():
         return {"suppressOutput": True}
 
+    import wb_transcript
+
     try:
         lease = ensure_default_lease(session, workspace_root, not_before=0.0, config=config)
         source = wb_transcript.capture_source(tpath, session, binding=lease)
     except ValueError:
         return {"suppressOutput": True}
 
+    turn_id = _resolve_turn_id(event, session, source["transcript_path"])
     try:
         try:
             eng_doc = read_json(eng_file)
@@ -233,6 +247,9 @@ def handle_stop(event: dict, *, config=None) -> dict:
         capture_hook(
             str(eng_file),
             dict(
+                hook_event_name="Stop",
+                identity_kind="turn",
+                turn_id=turn_id,
                 harness="wb",
                 session_id=session,
                 mindie_activation=lease.get("token"),

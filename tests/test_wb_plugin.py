@@ -97,6 +97,8 @@ def test_product_and_harness_compatibility_contracts_and_module_invariants(monke
 
     wb_skill_fm = yaml.safe_load((PLUGIN_ROOT / "skills" / "mindie-agent" / "SKILL.md").read_text(encoding="utf-8").split("---", 2)[1])
     assert isinstance(wb_skill_fm, dict) and wb_skill_fm.get("name") == "mindie-agent"
+    assert wb_skill_fm.get("user-invocable") is False
+    assert "disable-model-invocation" not in wb_skill_fm and "disableModelInvocation" not in wb_skill_fm
     assert (SCRIPTS_DIR / "organizer.py").is_file()
 
     compat = json.loads((REPO_ROOT / "harness-compatibility.json").read_text(encoding="utf-8"))

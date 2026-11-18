@@ -38,6 +38,7 @@ from identity import require_session
 from paths import admission_path, config_path, engine_config_path, read_json
 
 KNOWLEDGE_RPC_TIMEOUT = 30.0
+KNOWLEDGE_SYNC_TIMEOUT = 315.0
 MAX_INPUT_BYTES = 1024 * 1024
 
 
@@ -232,7 +233,7 @@ def _select_engine_config(
     if not Path(default_eng).is_file():
         from setup import ensure_default_profile
 
-        ensure_default_profile(config=cfg_file, workspace_root=workspace_root)
+        ensure_default_profile(config=cfg_file, workspace_root=None)
     adapter = read_json(cfg_file) if cfg_file.is_file() else {}
     domain_cfgs = adapter.get("domain_configs") if isinstance(adapter.get("domain_configs"), dict) else {}
     if domain is None and ref is None:
@@ -326,10 +327,13 @@ def execute_knowledge_tool(
                 if opt_key in body:
                     payload[opt_key] = body[opt_key]
             if not any(k in body for k in ("related_refs", "proposal", "topic", "target_signature")):
-                out_res = distill_selected(engine_path, payload)
+                raw_distill = distill_selected(engine_path, payload)
             else:
-                out_res = rpc(conn, "distill", payload, timeout=summary_budget.distill_rpc_timeout())
-            succeeded = True
+                raw_distill = rpc(conn, "distill", payload, timeout=summary_budget.distill_rpc_timeout())
+            from mindie_knowledge.graded.distill import result_view
+
+            out_res, distill_err = result_view(raw_distill)
+            succeeded = not distill_err
             return out_res
 
         if method == "query":
@@ -340,7 +344,8 @@ def execute_knowledge_tool(
         payload = dict(body, _session_id=resolved_session, _session_verified=True)
         if routed:
             payload["domain"] = engine_cfg["domain"]
-        raw_res = rpc(conn, method, payload, timeout=KNOWLEDGE_RPC_TIMEOUT)
+        rpc_timeout = KNOWLEDGE_SYNC_TIMEOUT if method == "sync" else KNOWLEDGE_RPC_TIMEOUT
+        raw_res = rpc(conn, method, payload, timeout=rpc_timeout)
         out_res = {"status": "ok", "feeds": raw_res} if (method == "sync" and isinstance(raw_res, list)) else raw_res
         succeeded = out_res.get("status") != "error" if isinstance(out_res, dict) else True
         return out_res

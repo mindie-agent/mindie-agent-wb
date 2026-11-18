@@ -162,7 +162,11 @@ def test_hook_and_setup_reexec_pass_timeout_mcp_does_not(tmp_path: Path, monkeyp
     def fake_popen(argv, **kwargs):
         rec = {"kind": "popen", "argv": list(argv), "kwargs": dict(kwargs), "timeout": None}
         seen.append(rec)
-        return types.SimpleNamespace(pid=12345, wait=lambda timeout=None: rec.__setitem__("timeout", timeout) or 0)
+        return types.SimpleNamespace(
+            pid=12345,
+            returncode=0,
+            communicate=lambda input=None, timeout=None: (rec.__setitem__("timeout", timeout), b"", b"")[1:],
+        )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -186,7 +190,11 @@ def test_hook_reexec_nonzero_is_json_deny_not_fail_open(tmp_path: Path, monkeypa
     monkeypatch.setattr(
         subprocess,
         "Popen",
-        lambda *_a, **_k: types.SimpleNamespace(pid=12345, wait=lambda timeout=None: 1),
+        lambda *_a, **_k: types.SimpleNamespace(
+            pid=12345,
+            returncode=1,
+            communicate=lambda input=None, timeout=None: (b"", b""),
+        ),
     )
     stdout = _CaptureStdout()
     monkeypatch.setattr(sys, "stdout", stdout)
@@ -494,19 +502,13 @@ def test_reporting_activation_failure_is_visible(
     err = capsys.readouterr().err
     assert "reporting activation failed" in err
 
-    monkeypatch.setattr(
-        mcp_server,
-        "_resolve_claim",
-        lambda *_a, **_k: {"session": "s", "bind_id": None, "workspace_root": str(isolated_mindie_env["home"])},
-    )
-    sharing = mcp_server.call_knowledge_surface(
+    unadvertised = mcp_server.call_knowledge_surface(
         "mindie_entry",
         {"op": "sharing-enable"},
         config=cfg,
     )
-    assert sharing["isError"] is True
-    assert sharing["structuredContent"]["status"] == "partial"
-    assert "reporting_error" in sharing["structuredContent"]
+    assert unadvertised["isError"] is True
+    assert "unknown mindie-knowledge tool" in unadvertised["content"][0]["text"]
 
     monkeypatch.setattr(
         setup,
@@ -539,14 +541,9 @@ def test_reporting_return_failure_is_partial_not_success(
     assert payload["status"] == "partial"
     assert "configuration_unavailable" in payload["reporting_error"]
     assert "reporting activation failed" in capsys.readouterr().err
-    monkeypatch.setattr(
-        mcp_server,
-        "_resolve_claim",
-        lambda *_a, **_k: {"session": "s", "bind_id": None, "workspace_root": str(isolated_mindie_env["home"])},
-    )
-    sharing = mcp_server.call_knowledge_surface("mindie_entry", {"op": "sharing-enable"}, config=cfg)
-    assert sharing["isError"] is True
-    assert sharing["structuredContent"]["status"] == "partial"
+    unadvertised = mcp_server.call_knowledge_surface("mindie_entry", {"op": "sharing-enable"}, config=cfg)
+    assert unadvertised["isError"] is True
+    assert "unknown mindie-knowledge tool" in unadvertised["content"][0]["text"]
     rc = setup.main(["sharing", "--enable", "--config", str(cfg)])
     assert rc == 1
 

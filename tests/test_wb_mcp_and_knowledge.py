@@ -258,9 +258,39 @@ def test_remote_surface_claims_original_arguments_before_clamping_yield_time_ms(
     raw_input = {"command": "npu-smi info", "yield_time_ms": 60000}
     identity.publish_bind(SESSION_A, "remote", "remote_bash", raw_input)
 
-    res = mcp_server.call_remote_surface("remote_bash", raw_input)
+    res = mcp_server.call_remote_surface("remote_bash", raw_input, meta={"workbuddy.ai/conversationId": SESSION_A})
     assert res["isError"] is False
     assert seen_args == [{"command": "npu-smi info", "yield_time_ms": 30000}]
+
+
+def test_knowledge_timeout_records_unknown_receipt_and_zero_meta_skips_bind_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import sqlite3
+    import identity
+    import mindie_knowledge.loop.cli as loop_cli
+    import mindie_knowledge.loop.transport as loop_transport
+
+    # 1. Zero-meta `_resolve_claim` never opens `mcp-binds.sqlite3` even when corrupt!
+    identity.bind_db_path().parent.mkdir(parents=True, exist_ok=True)
+    identity.bind_db_path().write_bytes(b"corrupt-bind-db-bytes")
+    claim = mcp_server._resolve_claim("knowledge", "knowledge_query", {"query": "ok"}, meta=None)
+    assert claim["session"] == mcp_server._CONNECTION_SESSION_ID
+    identity.bind_db_path().unlink()
+
+    # 2. `knowledge_sync` / `knowledge_distill` TimeoutError records `"unknown"` receipt!
+    monkeypatch.setattr(loop_cli, "ensure_service", lambda _cfg: "fake-conn")
+    monkeypatch.setattr(
+        loop_transport,
+        "rpc",
+        lambda *_a, **_kw: (_ for _ in ()).throw(TimeoutError("sync rpc timed out")),
+    )
+    receipts = mcp_server.RemoteReceipts(tmp_path / "know-timeout-receipts.sqlite3")
+    sync_err = mcp_server.call_knowledge_surface("knowledge_sync", {}, rpc_id=77, receipts=receipts)
+    assert sync_err["isError"] is True
+    with sqlite3.connect(receipts.path) as db:
+        statuses = [r[0] for r in db.execute("SELECT status FROM receipts")]
+    assert statuses == ["unknown"]
 
 
 def test_remote_timeout_arithmetic_enforces_outer_greater_than_inner_plus_grace():

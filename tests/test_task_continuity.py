@@ -144,7 +144,12 @@ def test_all_surfaces_execute_without_meta_or_pretool_bind_with_replay_guard(tmp
     wb_sess = "wb-session-replay-guard"
     replay_receipts = mcp_server.RemoteReceipts(tmp_path / "replay-receipts.sqlite3")
     publish_bind(wb_sess, "remote", "remote_auth", rem_args)
-    rem_req = {"jsonrpc": "2.0", "id": 99, "method": "tools/call", "params": {"name": "remote_auth", "arguments": rem_args}}
+    rem_req = {
+        "jsonrpc": "2.0",
+        "id": 99,
+        "method": "tools/call",
+        "params": {"name": "remote_auth", "arguments": rem_args, "_meta": {"workbuddy.ai/conversationId": wb_sess}},
+    }
     assert mcp_server.handle_rpc(rem_req, "remote", receipts=replay_receipts)["result"]["isError"] is False
     publish_bind(wb_sess, "remote", "remote_auth", rem_args)
     assert mcp_server.handle_rpc(rem_req, "remote", receipts=replay_receipts)["result"]["isError"] is True

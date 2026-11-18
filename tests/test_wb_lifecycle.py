@@ -86,7 +86,8 @@ def test_pre_tool_use_passthrough_and_identity_bind_security(tmp_path: Path):
             "tool_input": args,
         }
     )
-    assert hook_res["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert hook_res == {"suppressOutput": True}
+    assert "hookSpecificOutput" not in hook_res
     assert not paths.bind_db_path().exists()
 
     # Forged session identity in tool arguments is rejected in PreToolUse too
@@ -149,6 +150,20 @@ def test_pre_tool_use_passthrough_and_identity_bind_security(tmp_path: Path):
 
 
 def test_stop_checks_consent_and_scope_before_auto_provisioning_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import os
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    gl_sh = bin_dir / "gitleaks"
+    gl_sh.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    gl_sh.chmod(0o755)
+    (bin_dir / "gitleaks.cmd").write_bytes(b"@exit /b 0\r\n")
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    pathext = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    if ".CMD" not in pathext.upper():
+        pathext = f"{pathext};.CMD"
+    monkeypatch.setenv("PATHEXT", pathext)
+
     workspace = tmp_path / "ws"
     workspace.mkdir()
     outside = tmp_path / "outside"
@@ -238,6 +253,92 @@ def test_stop_checks_consent_and_scope_before_auto_provisioning_lease(tmp_path: 
     assert Path(lease["project_root"]).resolve() == workspace.resolve()
     assert len(captured_calls) == 1
     _, forwarded = captured_calls[0]
+    assert forwarded["hook_event_name"] == "Stop"
+    assert forwarded["identity_kind"] == "turn"
+    assert isinstance(forwarded["turn_id"], str) and forwarded["turn_id"]
     assert forwarded["harness"] == "wb"
     assert forwarded["session_id"] == SESSION_A
     assert forwarded["transcript_path"] == str(transcript.resolve())
+
+
+def test_real_stop_inserts_capture_row_in_store_v4_and_mcp_preserves_lease_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import os
+    import sqlite3
+    import mcp_server
+    import mindie_knowledge.loop.cli as loop_cli
+    import mindie_knowledge.loop.handoff as handoff_mod
+    import mindie_knowledge.loop.transport as loop_transport
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    gl_sh = bin_dir / "gitleaks"
+    gl_sh.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    gl_sh.chmod(0o755)
+    gl_cmd = bin_dir / "gitleaks.cmd"
+    gl_cmd.write_bytes(b"@exit /b 0\r\n")
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    pathext = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    if ".CMD" not in pathext.upper():
+        pathext = f"{pathext};.CMD"
+    monkeypatch.setenv("PATHEXT", pathext)
+
+    workspace = tmp_path / "verified-ws"
+    workspace.mkdir()
+    plugin_cwd = tmp_path / "plugin-cwd"
+    plugin_cwd.mkdir()
+
+    cfg = paths.config_path()
+    setup.ensure_default_profile(config=cfg, workspace_root=None)
+    setup.configure_community(config=cfg, enabled=True, fork="user/knowledge-vllm-ascend", project_root=workspace)
+
+    transcript = tmp_path / f"{SESSION_B}.jsonl"
+    transcript.write_text(
+        json.dumps(
+            {
+                "id": "m_real_1",
+                "type": "message",
+                "timestamp": 1999999999000,
+                "message": {"role": "user", "content": [{"type": "text", "text": "Fix Ascend 507015"}]},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        handoff_mod,
+        "request_wake",
+        lambda *_a, **_kw: {"wake": "requested", "runtime": "starting", "reason": "waking"},
+    )
+
+    stop_out = bridge.handle_stop(
+        {
+            "session_id": SESSION_B,
+            "workspace_root": str(workspace),
+            "transcript_path": str(transcript),
+        },
+        config=cfg,
+    )
+    assert stop_out == {"suppressOutput": True}
+
+    eng_doc = json.loads(paths.engine_config_path(cfg).read_text(encoding="utf-8"))
+    store_db = handoff_mod._store_path(eng_doc)
+    assert store_db.is_file()
+    with sqlite3.connect(store_db) as db:
+        count = db.execute("SELECT COUNT(*) FROM captures WHERE session=?", (SESSION_B,)).fetchone()[0]
+    assert count == 1
+
+    # Verify a subsequent zero-workspace MCP knowledge call running from `plugin_cwd` preserves `workspace`!
+    monkeypatch.chdir(plugin_cwd)
+    monkeypatch.setattr(loop_cli, "ensure_service", lambda _cfg: "fake-conn")
+    monkeypatch.setattr(loop_transport, "rpc", lambda *_a, **_kw: {"cards": [], "foundation_cards": []})
+    q_res = mcp_server.call_knowledge_surface(
+        "knowledge_query",
+        {"query": "ACLGraph"},
+        meta={"workbuddy.ai/conversationId": SESSION_B},
+        config=cfg,
+    )
+    assert q_res["isError"] is False
+    assert Path(admission.knowledge_lease(SESSION_B, config=cfg)["project_root"]).resolve() == workspace.resolve()

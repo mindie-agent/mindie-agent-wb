@@ -8,8 +8,8 @@ component updates (`update ...`) under explicit timeout budgets.
 
 [Invariants]
 - Enforces `HOOK_TOTAL = 10.0s >= HOOK_EXEC_BUDGET (8.0s) + CLEANUP_GRACE (2.0s)`.
-- Passive `Stop` fast-path checks community consent and authorized `project_roots`
-  before re-exec or SQLite access (`< 100ms`, zero `admission.sqlite3` created).
+- Passive `Stop` and `UserPromptSubmit` fast-paths execute in pure stdlib before
+  `_preferred_python()`, re-exec, or `bridge` import (`< 100ms`, zero SQLite created).
 - Hook failures emit a host-visible error payload and exit 0 (`permissionDecision=deny`
   on `PreToolUse`), never printing `{"suppressOutput": true}` to mask faults.
 
@@ -25,8 +25,11 @@ component updates (`update ...`) under explicit timeout budgets.
 from __future__ import annotations
 
 import io
+import json
+import math
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import types
@@ -35,7 +38,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from paths import apply_enterprise_transport_env, config_home, config_path, data_home, read_json
+from paths import apply_enterprise_transport_env, community_config_path, config_home, config_path, data_home, read_json
 
 HOOK_EXEC_BUDGET = 8.0
 HOOK_CLEANUP_GRACE = 2.0
@@ -43,7 +46,8 @@ HOOK_TOTAL = HOOK_EXEC_BUDGET + HOOK_CLEANUP_GRACE
 HOOK_LOCK_BUDGET = 2.0
 BOOTSTRAP_TOTAL = 540.0
 SETUP_REEXEC_GRACE = 15.0
-_STDLIB_POPEN = subprocess.Popen
+MAX_HOOK_STDIN_BYTES = 32 * 1024 * 1024
+_SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{3,127}\Z")
 _HOOK_EVENT_NAMES = {
     "session-start": "SessionStart",
     "user-prompt-expansion": "UserPromptExpansion",
@@ -52,6 +56,99 @@ _HOOK_EVENT_NAMES = {
     "pre-tool-use": "PreToolUse",
     "stop": "Stop",
 }
+
+
+def _parse_hook_stdin(raw: bytes) -> dict:
+    if len(raw) > MAX_HOOK_STDIN_BYTES:
+        raise ValueError("native hook payload exceeds 32 MiB byte budget")
+    if not raw.strip():
+        return {}
+    event = json.loads(raw.decode("utf-8"))
+    if not isinstance(event, dict):
+        raise ValueError("native hook payload must be a JSON object")
+    return event
+
+
+def _path_within_stdlib(candidate: str, root: str) -> bool:
+    try:
+        cand_res = str(Path(candidate).expanduser().resolve())
+        root_res = str(Path(root).expanduser().resolve())
+    except TimeoutError:
+        raise
+    except OSError:
+        return False
+    if os.name == "nt":
+        cand_res = os.path.normcase(cand_res)
+        root_res = os.path.normcase(root_res)
+    if cand_res == root_res:
+        return True
+    try:
+        rel = os.path.relpath(cand_res, root_res)
+    except ValueError:
+        return False
+    return rel != ".." and not rel.startswith(".." + os.sep) and not os.path.isabs(rel)
+
+
+def _may_capture_stop_stdlib(event: dict) -> bool:
+    """Pure-stdlib fast-path check without importing `bridge`, `identity`, or `remote_dev`."""
+    if event.get("stop_hook_active") is True:
+        return False
+    cfg_file = config_path()
+    if not cfg_file.is_file():
+        return False
+    raw_sid = event.get("session_id") or event.get("conversationId")
+    if not isinstance(raw_sid, str) or not _SESSION_RE.fullmatch(raw_sid.strip()):
+        return False
+    workspace = None
+    for key in ("cwd", "workspace_root", "workspaceRoot", "directory", "project_root"):
+        val = event.get(key)
+        if isinstance(val, str) and os.path.isabs(val):
+            workspace = val
+            break
+    if workspace is None:
+        wpaths = event.get("workspacePaths")
+        if isinstance(wpaths, list) and wpaths and isinstance(wpaths[0], str) and os.path.isabs(wpaths[0]):
+            workspace = wpaths[0]
+    if workspace is None:
+        return False
+
+    comm_file = community_config_path(cfg_file)
+    if not comm_file.is_file():
+        return False
+    try:
+        comm = read_json(comm_file)
+    except TimeoutError:
+        raise
+    except (OSError, ValueError):
+        return False
+    if (
+        comm.get("schema") != "mindie-community-config/1"
+        or comm.get("enabled") is not True
+        or not isinstance(comm.get("generation"), str)
+        or not comm["generation"]
+        or type(comm.get("enabled_at")) not in (int, float)
+        or not math.isfinite(comm["enabled_at"])
+        or comm["enabled_at"] <= 0
+    ):
+        return False
+    consent_ref = comm.get("consent_config")
+    if not isinstance(consent_ref, str) or not os.path.isabs(consent_ref):
+        return False
+    cfile = Path(consent_ref)
+    if not cfile.is_file():
+        return False
+    try:
+        consent = read_json(cfile)
+    except TimeoutError:
+        raise
+    except (OSError, ValueError):
+        return False
+    if consent.get("choice") != "contribute":
+        return False
+    roots = comm.get("project_roots")
+    if not isinstance(roots, list) or not roots or not all(isinstance(r, str) and os.path.isabs(r) for r in roots):
+        return False
+    return any(_path_within_stdlib(workspace, root) for root in roots)
 
 
 def _norm_python_path(py_exe: str | Path) -> Path:
@@ -109,8 +206,6 @@ def _preferred_python() -> str | None:
 
 
 def _emit_hook_failure(action: str, exc: BaseException) -> int:
-    import json
-
     event_name = _HOOK_EVENT_NAMES.get(action, action)
     detail = f"{type(exc).__name__}: {exc}"
     print(f"MindIE WorkBuddy hook error: {detail}", file=sys.stderr)
@@ -223,14 +318,8 @@ def _reexec(
     proc = subprocess.Popen(cmd, **popen_kwargs)
     job = _attach_windows_job(proc, kill_on_close=(argv[0] != "hook"))
     try:
-        if stdin_bytes is not None and getattr(proc, "stdin", None) is not None:
-            try:
-                proc.stdin.write(stdin_bytes)
-            except BrokenPipeError:
-                pass
-            finally:
-                proc.stdin.close()
-        rc = int(proc.wait(timeout=timeout))
+        proc.communicate(input=stdin_bytes, timeout=timeout)
+        rc = int(proc.returncode)
     except (subprocess.TimeoutExpired, TimeoutError) as exc:
         _kill_process_tree(proc, job, wait_timeout=min(0.5, HOOK_CLEANUP_GRACE))
         job = None
@@ -268,6 +357,21 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _dispatch(argv: list[str]) -> int:
+    buffered_stdin: bytes | None = None
+    if argv in (["hook", "user-prompt-submit"], ["hook", "user-prompt-expansion"]):
+        _parse_hook_stdin(sys.stdin.buffer.read(MAX_HOOK_STDIN_BYTES + 1))
+        sys.stdout.buffer.write(b'{"suppressOutput": true}\n')
+        sys.stdout.buffer.flush()
+        return 0
+
+    if argv == ["hook", "stop"] and os.environ.get("_MINDIE_WB_REEXEC") != "1":
+        buffered_stdin = sys.stdin.buffer.read(MAX_HOOK_STDIN_BYTES + 1)
+        event = _parse_hook_stdin(buffered_stdin)
+        if not _may_capture_stop_stdlib(event):
+            sys.stdout.buffer.write(b'{"suppressOutput": true}\n')
+            sys.stdout.buffer.flush()
+            return 0
+
     target_py = _preferred_python()
     target_script = Path(__file__).resolve()
     if argv[0] in {"hook", "mcp"} and config_path().is_file():
@@ -292,30 +396,6 @@ def _dispatch(argv: list[str]) -> int:
                     break
             else:
                 raise RuntimeError("active plugin payload does not match its recorded version")
-
-    buffered_stdin: bytes | None = None
-    if (
-        argv in (["hook", "user-prompt-submit"], ["hook", "user-prompt-expansion"])
-        and subprocess.Popen is _STDLIB_POPEN
-    ):
-        from identity import MAX_HOOK_BYTES, parse_hook
-
-        parse_hook(sys.stdin.buffer.read(MAX_HOOK_BYTES + 1))
-        sys.stdout.buffer.write(b'{"suppressOutput": true}\n')
-        sys.stdout.buffer.flush()
-        return 0
-
-    if argv == ["hook", "stop"] and subprocess.Popen is _STDLIB_POPEN:
-        from bridge import may_capture_community_stop
-        from identity import MAX_HOOK_BYTES, parse_hook
-
-        buffered_stdin = sys.stdin.buffer.read(MAX_HOOK_BYTES + 1)
-        event = parse_hook(buffered_stdin)
-        allowed, _ = may_capture_community_stop(event)
-        if not allowed:
-            sys.stdout.buffer.write(b'{"suppressOutput": true}\n')
-            sys.stdout.buffer.flush()
-            return 0
 
     if (
         target_py is not None

@@ -39,11 +39,11 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from admission import activate, deactivate, status_facts
+from admission import status_facts
 from bounded import run as bounded_run
 from component_catalog import COMPONENT_DESCRIPTIONS
 from component_update import trigger_background_update_if_due
-from identity import claim_bind, finish_bind, session_context
+from identity import _has_meta_or_env_claim_hint, _reject_identity_arguments, claim_bind, finish_bind, session_context
 from knowledge_cli import KNOWLEDGE_NAMES, PRIVATE_KNOWLEDGE_CATALOG, execute_knowledge_tool
 from paths import config_path, diagnostics_config_path, read_json, remote_receipts_path, state_dir, which_native
 from storage_lifecycle import hold_runtime_lease
@@ -284,6 +284,9 @@ def _rpc_receipt_id(surface: str, rpc_id) -> str:
 
 
 def _resolve_claim(surface: str, tool_name: str, arguments: dict, *, meta: dict | None = None, config=None) -> dict:
+    _reject_identity_arguments(arguments, surface)
+    if not _has_meta_or_env_claim_hint(meta):
+        return {"session": _CONNECTION_SESSION_ID, "bind_id": None, "workspace_root": None, "transcript_path": None}
     try:
         return claim_bind(surface, tool_name, arguments, meta=meta, config=config)
     except TimeoutError:
@@ -609,8 +612,11 @@ def call_knowledge_surface(
         session, bind_id = claim["session"], claim.get("bind_id")
         if receipt_store is not None and session != _CONNECTION_SESSION_ID and hasattr(receipt_store, "set_session"):
             receipt_store.set_session(call_id, session)
-        workspace = (args.get("project_root") or claim.get("workspace_root")
-                     or session_context(session, config=config).get("workspace_root") or os.getcwd())
+        bound_workspace = (
+            args.get("project_root")
+            or claim.get("workspace_root")
+            or session_context(session, config=config).get("workspace_root")
+        )
     except Exception as exc:
         if reserved and receipt_store is not None:
             try:
@@ -621,48 +627,34 @@ def call_knowledge_surface(
                 pass
         return _admission_failure(exc)
     succeeded = False
+    outcome = "failed"
     try:
-        if name == "mindie_entry":
-            op = args.get("op") or args.get("action") or "status"
-            if op in {"status", "sharing-status", "reporting-status", "recover"}:
-                payload = status_facts(session, config=config)
-            elif op == "deactivate":
-                payload = deactivate(session, config=config, project_root=workspace)
-            elif op in {"init", "activate"}:
-                cfg_file = config_path(config)
-                if not cfg_file.is_file():
-                    from setup import ensure_default_profile
-
-                    ensure_default_profile(config=cfg_file, workspace_root=workspace)
-                payload = activate(session, workspace, domain=args.get("domain"), config=config)
-            elif op in {"choose", "sharing-enable", "sharing-disable"}:
-                from setup import configure_community
-
-                enabled = args.get("choice") == "contribute" if op == "choose" else (op == "sharing-enable")
-                payload = configure_community(config=config, enabled=enabled, fork=args.get("repository"),
-                                              account=args.get("account"), project_root=workspace)
-            else:
-                raise ValueError(f"unsupported mindie_entry op: {op}")
-            succeeded = payload.get("status") != "partial" and not payload.get("reporting_error")
-            result = dict(content=[dict(type="text", text=canonical(payload))], structuredContent=payload, isError=not succeeded)
-        else:
-            payload = execute_knowledge_tool(name, args, session=session, project_root=workspace, config=config)
-            is_error = False
-            if name == "knowledge_distill":
-                from mindie_knowledge.graded.distill import result_view
-
-                payload, is_error = result_view(payload)
-            elif name == "knowledge_sync":
-                is_error = isinstance(payload, dict) and payload.get("status") == "error"
-            succeeded = not is_error
-            structured_payload = payload if isinstance(payload, dict) else {"feeds": payload}
-            result = dict(content=[dict(type="text", text=canonical(payload))], structuredContent=structured_payload, isError=bool(is_error))
+        if name not in KNOWLEDGE_NAMES:
+            raise ValueError(f"unknown mindie-knowledge tool: {name}")
+        payload = execute_knowledge_tool(name, args, session=session, project_root=bound_workspace, config=config)
+        is_error = False
+        if name == "knowledge_distill":
+            preserved = (
+                payload.get("status") in {"local_receipt_failed", "local_application_failed"}
+                and payload.get("model_execution") == "completed"
+                and payload.get("model_status") == "returned"
+            )
+            is_error = not (payload.get("operation_status") == "completed" or preserved)
+        elif name == "knowledge_sync":
+            is_error = isinstance(payload, dict) and payload.get("status") == "error"
+        succeeded = not is_error
+        outcome = "succeeded" if succeeded else "failed"
+        structured_payload = payload if isinstance(payload, dict) else {"feeds": payload}
+        result = dict(content=[dict(type="text", text=canonical(payload))], structuredContent=structured_payload, isError=bool(is_error))
     except Exception as exc:
+        if name in {"knowledge_distill", "knowledge_sync"} and isinstance(exc, (TimeoutError, ConnectionError)):
+            outcome = "unknown"
         result = dict(content=[dict(type="text", text=f"{type(exc).__name__}: {exc}")],
                       structuredContent=dict(error=str(exc), error_type=type(exc).__name__), isError=True)
 
     return _finalize_accounting(
-        result, succeeded, receipt_store=receipt_store, call_id=call_id, bind_id=bind_id, config=config,
+        result, succeeded, receipt_store=receipt_store, call_id=call_id,
+        outcome=outcome, bind_id=bind_id, config=config,
     )
 
 
