@@ -1,5 +1,24 @@
 # Default Session Lifecycle & Capture in Tencent WorkBuddy
 
-- **Default-Enabled Tools**: `mindie-remote-dev`, `mindie-tools`, and `mindie-knowledge` (`knowledge_query`, `knowledge_explain`, `knowledge_feedback`, `knowledge_distill`, `knowledge_sync`) are available out of the box when the plugin is enabled, auto-provisioning a session lease (`not_before=0.0`) on demand.
-- **Zero-I/O Ordinary Hooks**: `SessionStart`, `UserPromptSubmit`, and `PreToolUse` pass through without creating SQLite session or bind files.
-- **Opt-In Turn-End `Stop` Capture**: `bridge.py stop` checks community sharing consent (`mindie-consent.json` + `mindie-community.json`) and authorized `project_roots` before touching `admission.sqlite3`. When enabled and in scope, it provisions the session lease on demand and hands off the WorkBuddy JSONL transcript to `mindie_knowledge.loop.cli.capture_hook` without blocking or forcing model continuation.
+- **Default-on tools**: `mindie-remote-dev`, `mindie-tools`, and
+  `mindie-knowledge` are available whenever the plugin is enabled. They need no
+  onboarding command, activation command, `_meta`, or `PreToolUse` bind. A
+  default lease (`not_before=0.0`) is provisioned on demand when a knowledge or
+  capture operation needs one.
+- **Explicit revocation wins**: `Admission.inspect(session).status ==
+  "inactive"` is preserved. Never silently re-activate a revoked session, and
+  never treat a missing lease as revocation.
+- **Consent-first `Stop`**: the hook reads `mindie-consent.json`
+  (`choice in {"contribute", "local-only"}`) and `mindie-community.json`
+  (`enabled is True` plus non-empty absolute `project_roots`). When sharing is
+  unconfigured, disabled, or the workspace is out of scope, it returns
+  `{"suppressOutput": true}` immediately with zero SQLite creation.
+- **In-scope capture**: when enabled and in scope, `Stop` re-verifies the
+  sharing tier and scope, activates the default lease, validates the session
+  transcript with `wb_transcript.capture_source`, prepares the domain schema if
+  absent, and calls `capture_hook(..., timeout=6.0)` with the native turn id and
+  activation token. A capture failure is reported once and never blocks the
+  host turn.
+- **No command prefix**: ordinary prompts are not intercepted and do not need a
+  slash or dollar invocation prefix. Share or mute collection through
+  `setup.py sharing --enable | --local-only | --disable`.

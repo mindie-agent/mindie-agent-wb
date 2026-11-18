@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "mindie-agent",
-  "version": "0.1.18",
-  "description": "Ascend NPU & vLLM-Ascend engineering assistant: complete MCP suite for remote NPU development, profiling, roofline simulation, CANN/ACLGraph debugging, NPU fleet monitoring, cluster lease coordination, and L1-L4 graded knowledge flywheel.",
+  "version": "0.1.19",
+  "description": "Ascend NPU & vLLM-Ascend engineering assistant: converged 15-tool WorkBuddy `wb` remote profile, deterministic component tools plus `mindie_doctor` readiness checks, and a default-enabled L1-L4 graded knowledge flywheel.",
   "author": {
     "name": "MindIE Agent Team",
     "url": "https://github.com/mindie-agent/mindie-agent"

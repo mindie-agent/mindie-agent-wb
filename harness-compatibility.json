@@ -16,8 +16,7 @@
     "hooks.pre-tool-use",
     "hooks.stop",
     "mcp.stdio",
-    "transcript.session-store-jsonl",
-    "summary.structured-output"
+    "transcript.session-store-jsonl"
   ],
   "interface_registry": {
     "plugin.manifest": {
@@ -31,10 +30,14 @@
       ],
       "code_paths": [
         "plugins/mindie-agent/plugin.json",
-        "plugins/mindie-agent/.codebuddy-plugin/plugin.json"
+        "plugins/mindie-agent/.codebuddy-plugin/plugin.json",
+        "plugins/mindie-agent/.workbuddy-plugin/plugin.json",
+        "plugins/mindie-agent/.claude-plugin/plugin.json",
+        "plugins/mindie-agent/.mcp.json",
+        "plugins/mindie-agent/mcp.json"
       ],
       "test_ids": [
-        "tests/test_wb_plugin.py::test_plugin_manifests_and_connector_mcp_layout"
+        "tests/test_wb_plugin.py::test_manifests_versions_and_disjoint_mcp_layout"
       ],
       "evidence_refs": [
         "README.md"
@@ -50,10 +53,11 @@
         }
       ],
       "code_paths": [
+        "plugins/mindie-agent/scripts/mindie_launch.py:main",
         "plugins/mindie-agent/scripts/bridge.py:handle_session_start"
       ],
       "test_ids": [
-        "tests/test_wb_lifecycle.py::test_passive_session_start_and_ordinary_prompt_stay_quiet"
+        "tests/test_wb_lifecycle.py::test_passive_session_start_and_prompts_create_zero_sqlite"
       ],
       "evidence_refs": [
         "README.md"
@@ -69,10 +73,11 @@
         }
       ],
       "code_paths": [
+        "plugins/mindie-agent/scripts/mindie_launch.py:_fast_hook",
         "plugins/mindie-agent/scripts/bridge.py:handle_user_prompt_submit"
       ],
       "test_ids": [
-        "tests/test_wb_lifecycle.py::test_user_prompt_submit_passthrough_creates_zero_sqlite_state"
+        "tests/test_wb_lifecycle.py::test_passive_session_start_and_prompts_create_zero_sqlite"
       ],
       "evidence_refs": [
         "README.md"
@@ -88,10 +93,11 @@
         }
       ],
       "code_paths": [
+        "plugins/mindie-agent/scripts/mindie_launch.py:_fast_hook",
         "plugins/mindie-agent/scripts/bridge.py:handle_pre_tool_use"
       ],
       "test_ids": [
-        "tests/test_wb_lifecycle.py::test_pre_tool_use_passthrough_and_identity_bind_security"
+        "tests/test_wb_lifecycle.py::test_pre_tool_use_denies_forged_identity_keys"
       ],
       "evidence_refs": [
         "README.md"
@@ -107,10 +113,12 @@
         }
       ],
       "code_paths": [
+        "plugins/mindie-agent/scripts/mindie_launch.py:_may_capture_stop",
         "plugins/mindie-agent/scripts/bridge.py:handle_stop"
       ],
       "test_ids": [
-        "tests/test_wb_lifecycle.py::test_stop_checks_consent_and_scope_before_auto_provisioning_lease"
+        "tests/test_wb_lifecycle.py::test_hook_stop_fast_paths_are_under_100ms",
+        "tests/test_wb_lifecycle.py::test_stop_capture_contribute_and_local_only_preserve_revocation"
       ],
       "evidence_refs": [
         "README.md"
@@ -129,8 +137,8 @@
         "plugins/mindie-agent/scripts/mcp_server.py:serve"
       ],
       "test_ids": [
-        "tests/test_wb_mcp_and_knowledge.py::test_complete_mcp_tool_surfaces_exposed",
-        "tests/test_wb_mcp_and_knowledge.py::test_receipt_honesty_preserves_succeeded_remote_result_on_local_sqlite_error"
+        "tests/test_wb_mcp_and_knowledge.py::test_disjoint_mcp_catalogs",
+        "tests/test_wb_mcp_and_knowledge.py::test_knowledge_query_zero_meta_and_receipt_honesty"
       ],
       "evidence_refs": [
         "README.md"
@@ -150,25 +158,6 @@
       ],
       "test_ids": [
         "tests/test_wb_transcript.py::test_transcript_extracts_public_messages_from_workbuddy_session_store"
-      ],
-      "evidence_refs": [
-        "README.md"
-      ]
-    },
-    "summary.structured-output": {
-      "supported": [
-        {
-          "minimum": "1.0.0",
-          "maximum": "9.99.99",
-          "maximum_inclusive": true,
-          "include_prerelease": true
-        }
-      ],
-      "code_paths": [
-        "plugins/mindie-agent/scripts/organizer.py:main"
-      ],
-      "test_ids": [
-        "tests/test_wb_organizer_and_update.py::test_organizer_emits_valid_summary_outcome_and_never_retries_unknown"
       ],
       "evidence_refs": [
         "README.md"
