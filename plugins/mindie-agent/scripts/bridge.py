@@ -123,14 +123,10 @@ def may_capture_community_stop(event: dict, *, config=None) -> tuple[bool, str |
     if not isinstance(roots, list) or not roots or not all(isinstance(r, str) and os.path.isabs(r) for r in roots):
         return False, None
 
-    workspace_root: str | None = None
     try:
         workspace_root = workspace_from_hook(event)
     except ValueError:
-        if admission_path(config).is_file():
-            existing = knowledge_lease(session, config=config)
-            if existing is not None and isinstance(existing.get("project_root"), str):
-                workspace_root = existing["project_root"]
+        return False, None
     if not workspace_root:
         return False, None
 
@@ -221,6 +217,17 @@ def handle_stop(event: dict, *, config=None) -> dict:
         return {"suppressOutput": True}
 
     try:
+        try:
+            eng_doc = read_json(eng_file)
+            if isinstance(eng_doc.get("root"), str) and isinstance(eng_doc.get("domain"), str):
+                from mindie_knowledge.loop.handoff import _store_path, prepare_schema
+
+                if not _store_path(eng_doc).is_file():
+                    prepare_schema(str(eng_file))
+        except TimeoutError:
+            raise
+        except (OSError, ValueError):
+            pass
         from mindie_knowledge.loop.cli import capture_hook
 
         capture_hook(

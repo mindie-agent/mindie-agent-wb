@@ -69,13 +69,23 @@ def ensure_default_lease(
     if is_deactivated(session, config=config):
         raise ValueError("MindIE knowledge is deactivated for this session")
     existing = knowledge_lease(session, config=config)
-    if existing is not None:
-        return dict(
-            existing,
-            enabled=int(bool(existing.get("enabled", 1))),
-            entry_enabled=int(bool(existing.get("entry_enabled", 1))),
-        )
-    root = str(Path(project_root or os.getcwd()).resolve())
+    if project_root is not None:
+        root = str(Path(project_root).resolve())
+        if existing is not None and isinstance(existing.get("project_root"), str):
+            if Path(existing["project_root"]).resolve() == Path(root).resolve():
+                return dict(
+                    existing,
+                    enabled=int(bool(existing.get("enabled", 1))),
+                    entry_enabled=int(bool(existing.get("entry_enabled", 1))),
+                )
+    else:
+        if existing is not None:
+            return dict(
+                existing,
+                enabled=int(bool(existing.get("enabled", 1))),
+                entry_enabled=int(bool(existing.get("entry_enabled", 1))),
+            )
+        root = str(Path(os.getcwd()).resolve())
     adm = gate(config)
     adm.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     lease = adm.activate(session, project_root=root, root_session=session, not_before=not_before)

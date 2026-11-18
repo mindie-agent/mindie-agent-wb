@@ -93,6 +93,10 @@ def test_product_and_harness_compatibility_contracts_and_module_invariants(monke
         "npu-top",
     }
     assert (PLUGIN_ROOT / "skills" / "mindie-agent" / "SKILL.md").is_file()
+    import yaml
+
+    wb_skill_fm = yaml.safe_load((PLUGIN_ROOT / "skills" / "mindie-agent" / "SKILL.md").read_text(encoding="utf-8").split("---", 2)[1])
+    assert isinstance(wb_skill_fm, dict) and wb_skill_fm.get("name") == "mindie-agent"
     assert (SCRIPTS_DIR / "organizer.py").is_file()
 
     compat = json.loads((REPO_ROOT / "harness-compatibility.json").read_text(encoding="utf-8"))

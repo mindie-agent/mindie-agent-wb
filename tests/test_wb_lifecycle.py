@@ -196,7 +196,22 @@ def test_stop_checks_consent_and_scope_before_auto_provisioning_lease(tmp_path: 
     assert out_of_scope_stop == {"suppressOutput": True}
     assert not paths.admission_path().exists()
 
-    # 3. In-scope Stop auto-provisions default lease (not_before=0.0) and captures without prior activation
+    # 3. Simulate an earlier zero-cwd MCP call creating a lease at `outside`; Stop with no cwd never guesses from stale lease,
+    #    and Stop with verified `workspace` re-activates lease to `workspace` and prepares `state-v4.sqlite3`!
+    admission.ensure_default_lease(SESSION_A, outside, not_before=0.0)
+    assert Path(admission.knowledge_lease(SESSION_A)["project_root"]).resolve() == outside.resolve()
+    no_cwd_stop = bridge.handle_stop({"session_id": SESSION_A, "transcript_path": str(transcript)})
+    assert no_cwd_stop == {"suppressOutput": True}
+    assert Path(admission.knowledge_lease(SESSION_A)["project_root"]).resolve() == outside.resolve()
+
+    import mindie_knowledge.loop.handoff as handoff_mod
+    import shutil as _shutil
+
+    eng_doc = json.loads(paths.engine_config_path().read_text(encoding="utf-8"))
+    store_db = handoff_mod._store_path(eng_doc)
+    _shutil.rmtree(store_db.parent.parent, ignore_errors=True)
+    assert not store_db.exists()
+
     captured_calls = []
 
     def fake_capture_hook(engine_cfg, payload):
@@ -217,8 +232,10 @@ def test_stop_checks_consent_and_scope_before_auto_provisioning_lease(tmp_path: 
     assert active_stop == {"suppressOutput": True}
     assert active_stop.get("decision") != "block"
     assert paths.admission_path().is_file()
+    assert store_db.is_file()
     lease = admission.knowledge_lease(SESSION_A)
     assert lease is not None and lease["activated_at"] == 0.0
+    assert Path(lease["project_root"]).resolve() == workspace.resolve()
     assert len(captured_calls) == 1
     _, forwarded = captured_calls[0]
     assert forwarded["harness"] == "wb"

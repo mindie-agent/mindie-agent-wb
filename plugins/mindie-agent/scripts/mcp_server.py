@@ -653,9 +653,10 @@ def call_knowledge_surface(
 
                 payload, is_error = result_view(payload)
             elif name == "knowledge_sync":
-                is_error = payload.get("status") != "ok"
+                is_error = isinstance(payload, dict) and payload.get("status") == "error"
             succeeded = not is_error
-            result = dict(content=[dict(type="text", text=canonical(payload))], structuredContent=payload, isError=bool(is_error))
+            structured_payload = payload if isinstance(payload, dict) else {"feeds": payload}
+            result = dict(content=[dict(type="text", text=canonical(payload))], structuredContent=structured_payload, isError=bool(is_error))
     except Exception as exc:
         result = dict(content=[dict(type="text", text=f"{type(exc).__name__}: {exc}")],
                       structuredContent=dict(error=str(exc), error_type=type(exc).__name__), isError=True)
