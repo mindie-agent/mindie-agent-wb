@@ -10,7 +10,7 @@ Native plugin and UI Connector adapter for **Tencent WorkBuddy** (and its bundle
 
 - **Connector UI surface**: [`plugin.json`](plugins/mindie-agent/plugin.json) + [`mcp.json`](plugins/mindie-agent/mcp.json) with bilingual `extensions["ai.workbuddy"]` metadata.
 - **Native plugin surface**: [`.codebuddy-plugin/plugin.json`](plugins/mindie-agent/.codebuddy-plugin/plugin.json) + [`.mcp.json`](plugins/mindie-agent/.mcp.json) + [`hooks/hooks.json`](plugins/mindie-agent/hooks/hooks.json) + [`SKILL.md`](plugins/mindie-agent/skills/mindie-agent/SKILL.md).
-- **Six thin scripts (`v0.1.20`)**: `mindie_launch.py`, `bridge.py`, `mcp_server.py`, `wb_transcript.py`, `wb_install.py`, and `setup.py`. They delegate to `mindie-harness v0.1.7`; `remote-dev v0.11.15` natively serves the `wb` 15-tool profile, so no local compatibility layer is retained.
+- **Six thin scripts (`v0.1.20`)**: `mindie_launch.py`, `bridge.py`, `mcp_server.py`, `wb_transcript.py`, `wb_install.py`, and `setup.py`. They delegate to `mindie-harness v0.1.8`; `remote-dev v0.11.15` natively serves the `wb` 15-tool profile, so no local compatibility layer is retained.
 
 ## 2. Tool Matrix (15 + 11 + 5)
 
