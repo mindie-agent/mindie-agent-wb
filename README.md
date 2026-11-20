@@ -18,7 +18,7 @@ WorkBuddy 桌面端的 **Connector（连接器）** 基于 **Agent Plugins 1.0.0
 
 1. **Connector UI 规范兼容**：[`plugin.json`](plugins/mindie-agent/plugin.json) + [`mcp.json`](plugins/mindie-agent/mcp.json) 声明 `extensions["ai.workbuddy"]` 双语展示元数据、示例 Prompt 与超时策略。
 2. **Native Agent Plugin 完整能力**：[`.codebuddy-plugin/plugin.json`](plugins/mindie-agent/.codebuddy-plugin/plugin.json) + [`.mcp.json`](plugins/mindie-agent/.mcp.json) + [`hooks/hooks.json`](plugins/mindie-agent/hooks/hooks.json) + [`skills/mindie-agent/SKILL.md`](plugins/mindie-agent/skills/mindie-agent/SKILL.md)，挂载 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`Stop` 四类生命周期 Hook，并默认加载三个 stdio MCP Server（`alwaysLoad: true`, `defer_loading: false`）。
-3. **六个薄脚本（`v0.1.20`）**：`mindie_launch.py`、`bridge.py`、`mcp_server.py`、`wb_transcript.py`、`wb_install.py`、`setup.py`。运行时委托 `mindie-harness v0.1.6`；`remote-dev v0.11.15` 原生提供 `wb` 15 工具 profile，不再需要本地兼容层。
+3. **六个薄脚本（`v0.1.20`）**：`mindie_launch.py`、`bridge.py`、`mcp_server.py`、`wb_transcript.py`、`wb_install.py`、`setup.py`。运行时委托 `mindie-harness v0.1.7`；`remote-dev v0.11.15` 原生提供 `wb` 15 工具 profile，不再需要本地兼容层。
 
 → 直接跳到 [快速安装与验证](#3-快速安装与验证)。
 
