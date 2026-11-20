@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.19-0F766E.svg" alt="Release v0.1.19"></a>
+  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.20-0F766E.svg" alt="Release v0.1.20"></a>
 </p>
 
 ## 1. 架构概览：连接器（Connector）与原生插件（Plugin）
@@ -18,7 +18,7 @@ WorkBuddy 桌面端的 **Connector（连接器）** 基于 **Agent Plugins 1.0.0
 
 1. **Connector UI 规范兼容**：[`plugin.json`](plugins/mindie-agent/plugin.json) + [`mcp.json`](plugins/mindie-agent/mcp.json) 声明 `extensions["ai.workbuddy"]` 双语展示元数据、示例 Prompt 与超时策略。
 2. **Native Agent Plugin 完整能力**：[`.codebuddy-plugin/plugin.json`](plugins/mindie-agent/.codebuddy-plugin/plugin.json) + [`.mcp.json`](plugins/mindie-agent/.mcp.json) + [`hooks/hooks.json`](plugins/mindie-agent/hooks/hooks.json) + [`skills/mindie-agent/SKILL.md`](plugins/mindie-agent/skills/mindie-agent/SKILL.md)，挂载 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`Stop` 四类生命周期 Hook，并默认加载三个 stdio MCP Server（`alwaysLoad: true`, `defer_loading: false`）。
-3. **六个薄脚本（`v0.1.19`）**：`mindie_launch.py`、`bridge.py`、`mcp_server.py`、`wb_transcript.py`、`wb_install.py`、`setup.py`。运行时委托 `mindie-harness v0.1.3`；`remote-dev v0.11.14` 原生提供 `wb` 15 工具 profile，不再需要本地兼容层。
+3. **六个薄脚本（`v0.1.20`）**：`mindie_launch.py`、`bridge.py`、`mcp_server.py`、`wb_transcript.py`、`wb_install.py`、`setup.py`。运行时委托 `mindie-harness v0.1.5`；`remote-dev v0.11.15` 原生提供 `wb` 15 工具 profile，不再需要本地兼容层。
 
 → 直接跳到 [快速安装与验证](#3-快速安装与验证)。
 
@@ -91,6 +91,6 @@ python plugins/mindie-agent/scripts/setup.py init --install-wb --dry-run
 - 安装与工作区：[`docs/install/workspace-setup.md`](docs/install/workspace-setup.md)
 - GitHub 登录（可选）：[`docs/install/github-authentication.md`](docs/install/github-authentication.md)
 - 用户须知与数据范围：[`docs/install/user-notice.md`](docs/install/user-notice.md)
-- 版本说明：[`docs/releases/mindie-agent-wb-0.1.19.md`](docs/releases/mindie-agent-wb-0.1.19.md)
+- 版本说明：[`docs/releases/mindie-agent-wb-0.1.20.md`](docs/releases/mindie-agent-wb-0.1.20.md)
 
 如果这个项目帮到了你，欢迎顺手点一个 Star ⭐。
