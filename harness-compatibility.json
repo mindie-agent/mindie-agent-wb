@@ -73,7 +73,7 @@
         }
       ],
       "code_paths": [
-        "plugins/mindie-agent/scripts/mindie_launch.py:_fast_hook",
+        "plugins/mindie-agent/scripts/mindie_launch.py:main",
         "plugins/mindie-agent/scripts/bridge.py:handle_user_prompt_submit"
       ],
       "test_ids": [

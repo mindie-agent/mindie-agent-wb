@@ -124,3 +124,30 @@ def test_transcript_extracts_public_messages_from_workbuddy_session_store(tmp_pa
         expected=persisted,
     )
     assert inc2["status"] == "unchanged"
+
+    # When `scan_until` clamps the read boundary before trailing records, `more` is False against `effective_end`.
+    first_end = material["end"]
+    with transcript_file.open("ab") as stream:
+        stream.write(
+            (
+                json.dumps(
+                    {
+                        "id": "msg-3",
+                        "parentId": "msg-2",
+                        "type": "message",
+                        "timestamp": 1761899200000,
+                        "message": {"role": "user", "content": [{"type": "text", "text": "trailing turn beyond scan_until"}]},
+                    }
+                )
+                + "\n"
+            ).encode("utf-8")
+        )
+    clamped = wb_transcript.read_material(
+        source["transcript_path"],
+        0,
+        session_id=SESSION_ID,
+        not_before=binding["activated_at"],
+        scan_until=first_end,
+    )
+    assert clamped["status"] == "ok" and clamped["end"] == first_end
+    assert clamped["more"] is False and "trailing turn beyond scan_until" not in clamped["text"]

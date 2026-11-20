@@ -64,9 +64,14 @@ jobs:
   upgrade:
     uses: ./.github/workflows/runtime-upgrade.yml
 
+  host-acceptance:
+    uses: mindie-agent/mindie-bench/.github/workflows/verify-host-plugin.yml@main
+    with:
+      host: wb
+
   release-ready:
     name: release-ready
-    needs: [lf-gate, smoke, continuity, upgrade]
+    needs: [lf-gate, smoke, continuity, upgrade, host-acceptance]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

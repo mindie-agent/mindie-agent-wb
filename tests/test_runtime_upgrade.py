@@ -26,7 +26,7 @@ def _generation(profile: ProfileRef, name: str) -> PreparedGeneration:
 def test_runtime_generation_activation_and_rebinding(tmp_path: Path):
     plugin_root = tmp_path / "plugin"
     (plugin_root / "scripts").mkdir(parents=True)
-    (plugin_root / "plugin.json").write_text(json.dumps({"version": "0.1.19"}), encoding="utf-8")
+    (plugin_root / "plugin.json").write_text(json.dumps({"version": "0.1.20"}), encoding="utf-8")
     profile = ProfileRef.resolve("wb", plugin_root=plugin_root, config_path=tmp_path / "wb.json", data_dir=tmp_path / "data")
     assert not profile.config_path.exists()
 
@@ -41,13 +41,13 @@ def test_runtime_generation_activation_and_rebinding(tmp_path: Path):
         "profiler": ["old-python", "-I", "-X", "utf8", "-m", "mindie_profiler"],
         "sim": ["custom-wrapper", "--flag"],
     }
-    current["product_validation"] = {"native_version": "0.1.18"}
+    current["product_validation"] = {"native_version": "0.1.19"}
     profile.config_path.write_text(json.dumps(current), encoding="utf-8")
 
     rebound = rebind_native_plugin_if_needed(profile)
     assert rebound["status"] == "rebound"
     updated = json.loads(profile.config_path.read_text(encoding="utf-8"))
-    assert updated["product_validation"]["native_version"] == "0.1.19"
+    assert updated["product_validation"]["native_version"] == "0.1.20"
     assert updated["runtime_scripts"] == str(plugin_root / "scripts")
     assert updated["component_commands"]["profiler"] == [str(prepared.python_path), "-I", "-X", "utf8", "-m", "mindie_profiler"]
     assert updated["component_commands"]["sim"] == ["custom-wrapper", "--flag"]

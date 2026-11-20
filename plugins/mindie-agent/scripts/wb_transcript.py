@@ -211,10 +211,11 @@ def read_material(path: str | Path, start: int, *, session_id: str | None = None
             if start > 0 and stream.read(1) != b"\n":
                 return dict(result, status="invalid-boundary", coverage_note="cursor is not a whole-record boundary")
             stream.seek(start)
-            end_limit = min(stat.st_size, start + max_scan_bytes, scan_until if scan_until is not None else stat.st_size)
+            effective_end = min(stat.st_size, scan_until) if scan_until is not None else stat.st_size
+            end_limit = min(effective_end, start + max_scan_bytes)
             while stream.tell() < end_limit and time.monotonic() - begun < max_seconds:
                 offset = stream.tell()
-                raw = stream.readline(min(stat.st_size - offset, end_limit - offset))
+                raw = stream.readline(min(effective_end - offset, end_limit - offset))
                 if not raw:
                     break
                 if not raw.endswith(b"\n"):
@@ -254,7 +255,7 @@ def read_material(path: str | Path, start: int, *, session_id: str | None = None
                     result["skipped_records"] += 1
                 consumed.update(raw)
                 result["end"] = stream.tell()
-            result["more"] = result["end"] < stat.st_size
+            result["more"] = result["end"] < effective_end
     except TimeoutError:
         raise
     except OSError:

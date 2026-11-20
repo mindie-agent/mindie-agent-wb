@@ -1,7 +1,7 @@
 # MindIE Agent for Tencent WorkBuddy (`mindie-agent-wb`)
 
 <p>
-  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.19-0F766E.svg" alt="Release v0.1.19"></a>
+  <a href="https://github.com/mindie-agent/mindie-agent-wb/releases"><img src="https://img.shields.io/badge/release-v0.1.20-0F766E.svg" alt="Release v0.1.20"></a>
 </p>
 
 Native plugin and UI Connector adapter for **Tencent WorkBuddy** (and its bundled `@genie/agent-cli` / `codebuddy` runtime): a converged 15-tool `wb` remote profile, deterministic component tools plus `mindie_doctor`, a default-enabled L1-L4 knowledge flywheel, and a six-script thin runtime.
@@ -10,7 +10,7 @@ Native plugin and UI Connector adapter for **Tencent WorkBuddy** (and its bundle
 
 - **Connector UI surface**: [`plugin.json`](plugins/mindie-agent/plugin.json) + [`mcp.json`](plugins/mindie-agent/mcp.json) with bilingual `extensions["ai.workbuddy"]` metadata.
 - **Native plugin surface**: [`.codebuddy-plugin/plugin.json`](plugins/mindie-agent/.codebuddy-plugin/plugin.json) + [`.mcp.json`](plugins/mindie-agent/.mcp.json) + [`hooks/hooks.json`](plugins/mindie-agent/hooks/hooks.json) + [`SKILL.md`](plugins/mindie-agent/skills/mindie-agent/SKILL.md).
-- **Six thin scripts (`v0.1.19`)**: `mindie_launch.py`, `bridge.py`, `mcp_server.py`, `wb_transcript.py`, `wb_install.py`, and `setup.py`. They delegate to `mindie-harness v0.1.3`; `remote-dev v0.11.14` natively serves the `wb` 15-tool profile, so no local compatibility layer is retained.
+- **Six thin scripts (`v0.1.20`)**: `mindie_launch.py`, `bridge.py`, `mcp_server.py`, `wb_transcript.py`, `wb_install.py`, and `setup.py`. They delegate to `mindie-harness v0.1.8`; `remote-dev v0.11.15` natively serves the `wb` 15-tool profile, so no local compatibility layer is retained.
 
 ## 2. Tool Matrix (15 + 11 + 5)
 
@@ -81,6 +81,6 @@ python plugins/mindie-agent/scripts/setup.py init --install-wb --dry-run
 - Workspace setup: [`docs/install/workspace-setup.md`](docs/install/workspace-setup.md)
 - Optional GitHub sign-in: [`docs/install/github-authentication.md`](docs/install/github-authentication.md)
 - User notice and data scope: [`docs/install/user-notice.md`](docs/install/user-notice.md)
-- Release notes: [`docs/releases/mindie-agent-wb-0.1.19.en.md`](docs/releases/mindie-agent-wb-0.1.19.en.md)
+- Release notes: [`docs/releases/mindie-agent-wb-0.1.20.en.md`](docs/releases/mindie-agent-wb-0.1.20.en.md)
 
 If this project helps you, a one-line Star ⭐ is appreciated.
