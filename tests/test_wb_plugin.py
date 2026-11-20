@@ -66,7 +66,7 @@ def test_manifests_versions_and_disjoint_mcp_layout():
     assert marketplace["plugins"][0]["version"] == VERSION
     contract = json.loads((REPO_ROOT / "product-contract.json").read_text(encoding="utf-8"))
     assert contract["native_version"] == VERSION
-    assert contract["components"]["mindie-harness"] == "0.1.5"
+    assert contract["components"]["mindie-harness"] == "0.1.6"
 
     display = root_manifest["extensions"]["ai.workbuddy"]["display"]
     assert "15" in display["description_en"] and "mindie_doctor" in display["description_en"]
